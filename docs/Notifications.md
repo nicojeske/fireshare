@@ -21,7 +21,28 @@ DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/123456789/abcdefghijklmnop
 
 Only **public** videos are posted, and each video is posted once. A video that starts out private is posted the first time it is made public.
 
-The post contains the watch link (so Discord shows its inline player) plus a card with the title, game, length, quality, tags and uploader, and a **Watch on Fireshare** button. The card uses the color of the video's first colored tag. Password-protected videos show the poster instead of the player.
+When transcoding is enabled, the post is sent once the video's transcode has finished.
+
+The post contains a card with the title, game, length, quality, tags and uploader, and a **Watch on Fireshare** button. The title and button open the watch page, which plays the original file. The card uses the color of the video's first colored tag.
+
+#### Video preview
+
+Discord often can't play original recordings inline (HEVC, very large files, or the index at the end of the file). So every post gets a small **preview clip**: 720p H.264, up to 60 fps, sized to fit the server's upload limit. It's stored next to the video's other files as `<id>-discord.mp4`.
+
+- If the clip fits the upload limit, it's **attached** to the post and always plays inline.
+- Otherwise (long clips, or attaching turned off), the post **links directly** to the preview file, and Discord shows its player for that link.
+- Password-protected videos get no preview; the card shows the poster instead.
+
+Set the upload limit on the Integrations page to match your server's boost level: 10 MB with no boost, 50 MB at level 2, 100 MB at level 3.
+
+#### Fixing existing transcodes
+
+Transcodes are now written with the index at the start of the file (`+faststart`), so playback can begin right away. To fix transcodes created before this change without re-encoding them, run:
+
+```
+docker exec -it fireshare fireshare faststart-transcodes --dry-run   # list affected files
+docker exec -it fireshare fireshare faststart-transcodes
+```
 
 #### Pinging people with tags
 

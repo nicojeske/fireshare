@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     "discord_webhook_url": "",
     "discord_tag_mentions": {},
     "discord_ping_on_tag_add": True,
+    "discord_attach_preview": True,
+    "discord_upload_limit_mb": 10,
     "generic_webhook_url": "",
     "generic_webhook_payload": {},
     "steamgriddb_api_key": "",

@@ -732,7 +732,7 @@ def bulk_set_privacy():
             continue
         if became_public:
             try:
-                discord_notify.notify_new_video(vid_id)
+                discord_notify.queue_and_flush_async(vid_id)
             except Exception as e:
                 logger.error(f"Discord post failed for {vid_id}: {e}")
 

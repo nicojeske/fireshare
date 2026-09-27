@@ -667,7 +667,7 @@ def handle_video_details(id):
             if became_public:
                 # First time public: announce it on Discord (no-op if already posted)
                 try:
-                    discord_notify.notify_new_video(id)
+                    discord_notify.queue_and_flush_async(id)
                 except Exception as e:
                     logger.error(f"Discord post failed for {id}: {e}")
 

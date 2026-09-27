@@ -928,18 +928,11 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
                     Test Discord
                   </Button>
                   <DiscordTagMentions
-                    mentions={updatedConfig.integrations?.discord_tag_mentions || {}}
-                    pingOnTagAdd={updatedConfig.integrations?.discord_ping_on_tag_add ?? true}
-                    onMentionsChange={(mentions) =>
+                    integrations={updatedConfig.integrations || {}}
+                    onChange={(patch) =>
                       setUpdatedConfig((prev) => ({
                         ...prev,
-                        integrations: { ...prev.integrations, discord_tag_mentions: mentions },
-                      }))
-                    }
-                    onPingOnTagAddChange={(checked) =>
-                      setUpdatedConfig((prev) => ({
-                        ...prev,
-                        integrations: { ...prev.integrations, discord_ping_on_tag_add: checked },
+                        integrations: { ...prev.integrations, ...patch },
                       }))
                     }
                   />

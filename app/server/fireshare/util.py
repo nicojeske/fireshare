@@ -689,7 +689,7 @@ def _get_encoder_candidates(use_gpu=False, encoder_preference='auto'):
         'video_codec': 'libx264',
         'audio_codec': 'aac',
         'audio_bitrate': '128k',
-        'extra_args': ['-preset', 'fast', '-crf', '23']
+        'extra_args': ['-preset', 'fast', '-crf', '23', '-movflags', '+faststart']
     }
     av1_cpu = {
         'name': 'AV1 CPU',
@@ -703,14 +703,14 @@ def _get_encoder_candidates(use_gpu=False, encoder_preference='auto'):
         'video_codec': 'h264_nvenc',
         'audio_codec': 'aac',
         'audio_bitrate': '128k',
-        'extra_args': ['-preset', 'p4', '-cq:v', '23']
+        'extra_args': ['-preset', 'p4', '-cq:v', '23', '-movflags', '+faststart']
     }
     av1_nvenc = {
         'name': 'AV1 NVENC',
         'video_codec': 'av1_nvenc',
         'audio_codec': 'libopus',
         'audio_bitrate': '96k',
-        'extra_args': ['-preset', 'p4', '-cq:v', '30']
+        'extra_args': ['-preset', 'p4', '-cq:v', '30', '-movflags', '+faststart']
     }
 
     if encoder_preference == 'h264':
@@ -1125,6 +1125,80 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
     # Return failure with 'encoders' reason to indicate encoder failure (not corruption)
     # This allows the calling code to continue processing other videos
     return (False, 'encoders')
+
+def mp4_is_faststart(path):
+    """True if the top-level moov atom comes before mdat, so players can start
+    without downloading the end of the file. None if it can't be determined."""
+    try:
+        with open(path, 'rb') as f:
+            while True:
+                header = f.read(8)
+                if len(header) < 8:
+                    return None
+                size = int.from_bytes(header[:4], 'big')
+                kind = header[4:8]
+                if kind == b'moov':
+                    return True
+                if kind == b'mdat':
+                    return False
+                if size == 1:
+                    size = int.from_bytes(f.read(8), 'big')
+                    f.seek(size - 16, os.SEEK_CUR)
+                elif size == 0:
+                    return None
+                else:
+                    f.seek(size - 8, os.SEEK_CUR)
+    except OSError:
+        return None
+
+def remux_faststart(path):
+    """Move the moov atom to the front with a stream copy. Returns True on success."""
+    path = Path(path)
+    # Not *.tmp.mp4: transcode_videos deletes those on start as crash leftovers.
+    tmp = path.with_name(path.stem + '.remux.mp4')
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-i', str(path), '-map', '0', '-c', 'copy', '-movflags', '+faststart', str(tmp)]
+    logger.debug(f"$ {' '.join(cmd)}")
+    if sp.call(cmd) == 0 and tmp.exists() and tmp.stat().st_size > 0:
+        os.replace(tmp, path)
+        return True
+    if tmp.exists():
+        tmp.unlink()
+    return False
+
+def create_discord_preview(video_path, out_path, limit_mb=10):
+    """
+    Encode a small H.264 clip Discord can play inline, sized to fit the upload limit.
+    Returns (ok, fits_limit).
+    """
+    duration = get_video_duration(video_path) or 0
+    if duration <= 0:
+        return (False, False)
+    audio_kbps = 96
+    budget_kbps = limit_mb * 8 * 1000 * 0.9 / duration - audio_kbps
+    video_kbps = int(max(800, min(6000, budget_kbps)))
+    if budget_kbps < 800:
+        # Too long to fit the limit at a watchable bitrate; this clip gets linked instead.
+        video_kbps = 2500
+    out_path = Path(out_path)
+    tmp = out_path.with_name(out_path.stem + '.encoding.mp4')
+    cmd = ['ffmpeg', '-v', 'error', '-y', '-i', str(video_path),
+        '-map', '0:v:0', '-map', '0:a:0?',
+        '-vf', "scale=-2:'min(720,ih)'", '-fpsmax', '60',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+        '-b:v', f'{video_kbps}k', '-maxrate', f'{int(video_kbps * 1.5)}k', '-bufsize', f'{video_kbps * 2}k',
+        '-c:a', 'aac', '-b:a', f'{audio_kbps}k', '-ac', '2',
+        '-movflags', '+faststart', str(tmp)]
+    logger.debug(f"$ {' '.join(cmd)}")
+    s = time.time()
+    if sp.call(cmd) != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+        logger.warning(f"Failed to create Discord preview for {video_path}")
+        if tmp.exists():
+            tmp.unlink()
+        return (False, False)
+    os.replace(tmp, out_path)
+    size_mb = out_path.stat().st_size / (1000 * 1000)
+    logger.info(f"Created Discord preview ({size_mb:.1f} MB, {video_kbps} kbps) in {time.time() - s:.1f}s")
+    return (True, out_path.stat().st_size <= limit_mb * 1000 * 1000)
 
 def create_boomerang_preview(video_path, out_path, clip_duration=5):
     s = time.time()

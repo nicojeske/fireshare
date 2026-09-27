@@ -583,8 +583,12 @@ def scan_videos(root):
                 db.session.commit()
                 logger.info(f"Auto-tagged {len(auto_tagged)} video(s) via folder rules")
 
+        # Posted after transcoding finishes (flush in transcode_videos/bulk_import)
         for queued_id in discord_queue:
-            discord_notify.notify_new_video(queued_id, config, domain)
+            discord_notify.queue(queued_id)
+        if discord_queue and not (current_app.config.get('ENABLE_TRANSCODING')
+                                  and config.get('transcoding', {}).get('auto_transcode', True)):
+            discord_notify.flush_pending()
 
         # Automatic game detection for new videos (skip already tagged)
         steamgriddb_api_key = config.get("integrations", {}).get("steamgriddb_api_key")
@@ -787,7 +791,8 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
 
                     poster_ready = poster_path.exists() and poster_path.stat().st_size > 0
                     if discord_webhook_url and poster_ready:
-                        discord_notify.notify_new_video(video_id, config, domain)
+                        # Posted once transcoding below has finished
+                        discord_notify.queue(video_id)
                     elif discord_webhook_url and not poster_ready:
                         logger.warning(f"Skipping Discord webhook for {video_id}: poster not ready")
 
@@ -809,6 +814,7 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
                         if auto_transcode:
                             logger.info(f"Auto-transcoding uploaded video {video_id}")
                             ctx.invoke(transcode_videos, video=video_id)
+                    discord_notify.flush_pending()
                 else:
                     logger.warning(f"Skipping creation of poster for video {info.video_id} because the video at {str(video_path)} does not exist or is not accessible")
         else:
@@ -1175,6 +1181,36 @@ def transcode_videos(regenerate, video, include_corrupt):
             logger.info("Transcoding complete")
         finally:
             util.remove_lock(paths['data'], _TRANSCODE_LOCK)
+            # Discord posts wait for transcoding; send whatever is queued now
+            try:
+                discord_notify.flush_pending()
+            except Exception as e:
+                logger.error(f"Discord flush failed: {e}")
+
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Only list files that would be remuxed")
+def faststart_transcodes(dry_run):
+    """Move the moov atom to the front of existing transcodes (stream copy, no re-encode)."""
+    with create_app().app_context():
+        derived_root = Path(current_app.config['PROCESSED_DIRECTORY']) / "derived"
+        pattern = re.compile(r'-(?:480p|720p|1080p|cropped)\.mp4$')
+        candidates = [p for p in derived_root.glob('*/*.mp4') if pattern.search(p.name)]
+        fixed = failed = 0
+        for path in candidates:
+            if util.mp4_is_faststart(path) is not False:
+                continue
+            if dry_run:
+                logger.info(f"Would remux {path}")
+                fixed += 1
+                continue
+            if util.remux_faststart(path):
+                logger.info(f"Remuxed {path}")
+                fixed += 1
+            else:
+                logger.warning(f"Could not remux {path}")
+                failed += 1
+        verb = "need remuxing" if dry_run else "remuxed"
+        logger.info(f"Checked {len(candidates)} file(s): {fixed} {verb}, {failed} failed")
 
 @cli.command()
 @click.pass_context
@@ -1227,6 +1263,7 @@ def bulk_import(ctx, root):
             else:
                 logger.info("Skipping automatic transcoding (auto_transcode is disabled in settings)")
 
+        discord_notify.flush_pending()
         logger.info(f"Finished bulk import. Timing info: {json.dumps(timing)}")
         util.clear_transcoding_status(paths['data'])
 

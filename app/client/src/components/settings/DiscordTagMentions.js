@@ -6,10 +6,21 @@ const DISCORD_ID = /^\d{17,20}$/
 const DEV_MODE_URL =
   'https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID'
 
+const UPLOAD_LIMITS = [
+  { value: 10, label: '10 MB (no boost)' },
+  { value: 50, label: '50 MB (boost level 2)' },
+  { value: 100, label: '100 MB (boost level 3)' },
+]
+
 // Maps each tag to the Discord user or role it should ping. Webhooks can only
 // mention by numeric id, never by username, so that is what gets stored.
-const DiscordTagMentions = ({ mentions = {}, pingOnTagAdd = true, onMentionsChange, onPingOnTagAddChange }) => {
+// integrations: the config's integrations block; onChange(patch) merges keys into it.
+const DiscordTagMentions = ({ integrations = {}, onChange }) => {
   const [tags, setTags] = React.useState([])
+  const mentions = integrations.discord_tag_mentions || {}
+  const pingOnTagAdd = integrations.discord_ping_on_tag_add ?? true
+  const attachPreview = integrations.discord_attach_preview ?? true
+  const uploadLimit = integrations.discord_upload_limit_mb ?? 10
 
   React.useEffect(() => {
     TagService.getTags()
@@ -23,7 +34,7 @@ const DiscordTagMentions = ({ mentions = {}, pingOnTagAdd = true, onMentionsChan
     const next = { ...mentions }
     if (entry.id.trim() === '') delete next[key]
     else next[key] = { type: entry.type, id: entry.id.trim() }
-    onMentionsChange(next)
+    onChange({ discord_tag_mentions: next })
   }
 
   return (
@@ -73,9 +84,39 @@ const DiscordTagMentions = ({ mentions = {}, pingOnTagAdd = true, onMentionsChan
         )
       })}
       <FormControlLabel
-        control={<Checkbox checked={pingOnTagAdd} onChange={(e) => onPingOnTagAddChange(e.target.checked)} />}
+        control={
+          <Checkbox checked={pingOnTagAdd} onChange={(e) => onChange({ discord_ping_on_tag_add: e.target.checked })} />
+        }
         label="Ping people when their tag is added to an already posted video"
       />
+      <Typography variant="subtitle2" sx={{ pt: 1 }}>
+        Video preview
+      </Typography>
+      <Typography variant="caption" color="text.secondary">
+        Discord often can't play the original file (HEVC, large files), so every post gets a small H.264 preview clip.
+        It's attached when it fits the server's upload limit, otherwise the post links to it.
+      </Typography>
+      <FormControlLabel
+        control={
+          <Checkbox checked={attachPreview} onChange={(e) => onChange({ discord_attach_preview: e.target.checked })} />
+        }
+        label="Attach the preview clip to the post"
+      />
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Typography variant="body2">Server upload limit</Typography>
+        <NativeSelect
+          value={uploadLimit}
+          disabled={!attachPreview}
+          onChange={(e) => onChange({ discord_upload_limit_mb: Number(e.target.value) })}
+          sx={{ fontSize: 14 }}
+        >
+          {UPLOAD_LIMITS.map((l) => (
+            <option key={l.value} value={l.value}>
+              {l.label}
+            </option>
+          ))}
+        </NativeSelect>
+      </Box>
     </Stack>
   )
 }
