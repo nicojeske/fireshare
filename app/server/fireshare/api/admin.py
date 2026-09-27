@@ -14,7 +14,7 @@ from werkzeug.security import generate_password_hash
 
 from sqlalchemy import func
 
-from .. import db, logger, util
+from .. import db, logger, util, discord_notify
 from ..models import Video, VideoInfo, VideoView, GameMetadata, VideoGameLink, VideoTagLink, Image, ImageInfo, ImageGameLink, ImageTagLink, ImageView, TranscodeJob, MediaFolder
 from .. import permissions as perms
 from . import api
@@ -722,12 +722,19 @@ def bulk_set_privacy():
             results['errors'].append({'video_id': vid_id, 'error': 'Not found'})
             continue
         try:
+            became_public = video_info.private and not bool(private)
             video_info.private = bool(private)
             db.session.commit()
             results['updated'].append(vid_id)
         except Exception as e:
             db.session.rollback()
             results['errors'].append({'video_id': vid_id, 'error': str(e)})
+            continue
+        if became_public:
+            try:
+                discord_notify.notify_new_video(vid_id)
+            except Exception as e:
+                logger.error(f"Discord post failed for {vid_id}: {e}")
 
     return jsonify(results)
 

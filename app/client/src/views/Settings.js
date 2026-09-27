@@ -46,6 +46,7 @@ import LightTooltip from '../components/ui/LightTooltip'
 import GameSearch from '../components/game/GameSearch'
 import SecuritySettings from '../components/settings/SecuritySettings'
 import UploadTokens from '../components/settings/UploadTokens'
+import DiscordTagMentions from '../components/settings/DiscordTagMentions'
 import ChangePassword from '../components/settings/ChangePassword'
 import UserManagement from '../components/settings/UserManagement'
 import SidebarPagesEditor from '../components/settings/SidebarPagesEditor'
@@ -926,6 +927,22 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
                   >
                     Test Discord
                   </Button>
+                  <DiscordTagMentions
+                    mentions={updatedConfig.integrations?.discord_tag_mentions || {}}
+                    pingOnTagAdd={updatedConfig.integrations?.discord_ping_on_tag_add ?? true}
+                    onMentionsChange={(mentions) =>
+                      setUpdatedConfig((prev) => ({
+                        ...prev,
+                        integrations: { ...prev.integrations, discord_tag_mentions: mentions },
+                      }))
+                    }
+                    onPingOnTagAddChange={(checked) =>
+                      setUpdatedConfig((prev) => ({
+                        ...prev,
+                        integrations: { ...prev.integrations, discord_ping_on_tag_add: checked },
+                      }))
+                    }
+                  />
 
                   <Divider />
 

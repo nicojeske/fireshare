@@ -16,6 +16,7 @@ import requests
 import re
 
 from .constants import SUPPORTED_FILE_EXTENSIONS
+from . import discord_notify
 
 # Helper functions for persistent game suggestions storage
 def _get_suggestions_file():
@@ -511,6 +512,7 @@ def scan_videos(root):
         else:
             thumbnail_skip = 0
         processed_root = Path(current_app.config['PROCESSED_DIRECTORY'])
+        discord_queue = []
         for nv in new_videos:
             video_link_path = video_links / (nv.video_id + nv.extension)
             if not video_link_path.exists():
@@ -545,8 +547,8 @@ def scan_videos(root):
                 continue
             video_url = get_public_watch_url(nv.video_id, config, domain)
             if discord_webhook_url:
-                logger.info(f"Posting to Discord webhook for {nv.video_id}")
-                send_discord_webhook(webhook_url=discord_webhook_url, video_url=video_url)
+                # Posted after folder rules run so the embed can show the game
+                discord_queue.append(nv.video_id)
             if generic_webhook_url:
                 logger.info(f"Posting to Generic webhook for {nv.video_id}")
                 payload_str = json.dumps(generic_webhook_payload)
@@ -580,6 +582,9 @@ def scan_videos(root):
             if auto_tagged:
                 db.session.commit()
                 logger.info(f"Auto-tagged {len(auto_tagged)} video(s) via folder rules")
+
+        for queued_id in discord_queue:
+            discord_notify.notify_new_video(queued_id, config, domain)
 
         # Automatic game detection for new videos (skip already tagged)
         steamgriddb_api_key = config.get("integrations", {}).get("steamgriddb_api_key")
@@ -782,9 +787,7 @@ def scan_video(ctx, path, tag_ids, game_id, title, uploaded_by):
 
                     poster_ready = poster_path.exists() and poster_path.stat().st_size > 0
                     if discord_webhook_url and poster_ready:
-                        logger.info(f"Posting to Discord webhook")
-                        video_url = get_public_watch_url(video_id, config, domain)
-                        send_discord_webhook(webhook_url=discord_webhook_url, video_url=video_url)
+                        discord_notify.notify_new_video(video_id, config, domain)
                     elif discord_webhook_url and not poster_ready:
                         logger.warning(f"Skipping Discord webhook for {video_id}: poster not ready")
 

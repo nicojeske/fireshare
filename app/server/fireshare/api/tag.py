@@ -6,12 +6,20 @@ from flask import current_app, jsonify, request, Response
 from flask_login import login_required, current_user
 from sqlalchemy import func
 
-from .. import db, logger, util
+from .. import db, logger, util, discord_notify
 from ..models import Video, VideoInfo, VideoView, VideoGameLink, VideoTagLink, CustomTag
 from .. import permissions as P
 from . import api
 from .decorators import require_perm
 from .helpers import cancel_pending_transcode_jobs, delete_video_files, viewer_sees_private
+
+
+def _discord_tag_ping(video_id, tag_ids):
+    # Discord is best-effort: a failed ping must never fail the tag request.
+    try:
+        discord_notify.notify_tag_added(video_id, tag_ids)
+    except Exception as e:
+        logger.error(f"Discord tag ping failed for {video_id}: {e}")
 
 
 def _regenerate_boomerang_bg(video_id, extension, processed_directory):
@@ -214,6 +222,7 @@ def add_tag_to_video(video_id):
     db.session.add(link)
     db.session.commit()
     _regenerate_boomerang_bg(video.video_id, video.extension, current_app.config["PROCESSED_DIRECTORY"])
+    _discord_tag_ping(video.video_id, [tag.id])
     return jsonify(link.json()), 201
 
 
@@ -259,6 +268,7 @@ def bulk_assign_tag():
         v = Video.query.filter_by(video_id=video_id).first()
         if v:
             _regenerate_boomerang_bg(v.video_id, v.extension, processed_dir)
+        _discord_tag_ping(video_id, [tag.id])
     return jsonify({"created": created, "skipped": len(data['video_ids']) - created}), 200
 
 

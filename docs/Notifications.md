@@ -17,6 +17,35 @@ Since gaming and Discord go hand-in-hand, Fireshare includes a dedicated Discord
 DISCORD_WEBHOOK_URL='https://discord.com/api/webhooks/123456789/abcdefghijklmnopqrstuvwxyz'
 ```
 
+#### What gets posted
+
+Only **public** videos are posted, and each video is posted once. A video that starts out private is posted the first time it is made public.
+
+The post contains the watch link (so Discord shows its inline player) plus a card with the title, game, length, quality, tags and uploader, and a **Watch on Fireshare** button. The card uses the color of the video's first colored tag. Password-protected videos show the poster instead of the player.
+
+#### Pinging people with tags
+
+If your tags represent people, you can map each tag to a Discord user or role on the **Integrations** settings page. Everyone mapped to a tag on the video is mentioned in the post.
+
+Discord webhooks can only mention by numeric ID, not by username. To copy an ID, turn on **Developer Mode** in Discord (User Settings → Advanced), then right-click a user or role and choose **Copy ID**.
+
+When **Ping people when their tag is added to an already posted video** is on, adding a mapped tag later sends a short follow-up message that pings only the newly tagged person.
+
+Titles and descriptions can never trigger `@everyone`, `@here` or unmapped mentions.
+
+**config.json example:**
+```json
+"integrations": {
+  "discord_webhook_url": "https://discord.com/api/webhooks/...",
+  "discord_tag_mentions": {
+    "3": { "type": "user", "id": "123456789012345678" },
+    "7": { "type": "role", "id": "223456789012345678" }
+  },
+  "discord_ping_on_tag_add": true
+}
+```
+The keys of `discord_tag_mentions` are tag IDs.
+
 ---
 
 ### Generic Webhook

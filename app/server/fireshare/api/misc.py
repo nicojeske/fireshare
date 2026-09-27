@@ -9,7 +9,8 @@ from flask_login import login_required, current_user
 
 from .. import db, logger
 from ..models import Video, VideoInfo
-from ..cli import send_discord_webhook, send_generic_webhook
+from ..cli import send_generic_webhook
+from .. import discord_notify
 from . import api
 from .decorators import admin_required, demo_restrict, strict_admin_required
 
@@ -258,12 +259,11 @@ def rss_feed():
 def test_discord_webhook():
     data = request.get_json()
     webhook_url = data.get('webhook_url')
-    video_url = data.get('video_url', 'https://fireshare.test.worked')
 
     if not webhook_url:
         return jsonify({"error": "No Discord Webhook URL provided"}), 400
     try:
-        result = send_discord_webhook(webhook_url, video_url)
+        result = discord_notify.send_test_message(webhook_url)
         if result and isinstance(result, dict):
             if result.get("status") == "success":
                 return jsonify({"message": "Discord Webhook sent successfully!"}), 200

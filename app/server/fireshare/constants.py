@@ -26,6 +26,8 @@ DEFAULT_CONFIG = {
   },
   "integrations": {
     "discord_webhook_url": "",
+    "discord_tag_mentions": {},
+    "discord_ping_on_tag_add": True,
     "generic_webhook_url": "",
     "generic_webhook_payload": {},
     "steamgriddb_api_key": "",

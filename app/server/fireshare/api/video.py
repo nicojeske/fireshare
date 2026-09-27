@@ -18,7 +18,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func
 from sqlalchemy.sql import text
 
-from .. import db, logger, util
+from .. import db, logger, util, discord_notify
 from ..models import Video, VideoInfo, VideoView, VideoGameLink, VideoTagLink, FolderRule, MediaFolder
 from .. import permissions as P
 from . import api
@@ -605,6 +605,7 @@ def handle_video_details(id):
             }
             if 'private' in editable:
                 editable['private'] = bool(editable['private'])
+            became_public = editable.get('private') is False and video_info.private
             if editable:
                 db.session.query(VideoInfo).filter_by(video_id=id).update(editable)
 
@@ -662,6 +663,13 @@ def handle_video_details(id):
                 else:
                     # Creating / replacing the crop
                     _apply_crop_async(video, video_info, resolved_start, resolved_end, paths)
+
+            if became_public:
+                # First time public: announce it on Discord (no-op if already posted)
+                try:
+                    discord_notify.notify_new_video(id)
+                except Exception as e:
+                    logger.error(f"Discord post failed for {id}: {e}")
 
             if generated_password is not None:
                 return jsonify({"generated_password": generated_password}), 201
