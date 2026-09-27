@@ -1,0 +1,144 @@
+name: Sync Upstream
+
+# Merges fireshare-app/fireshare into this fork. If the merge conflicts (or the
+# push is rejected), an issue is opened so the conflict can be resolved with the
+# `/resolve-upstream-conflicts` Claude Code skill.
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: fireshare-app/fireshare
+  UPSTREAM_BRANCH: main
+  FORK_BRANCH: main
+  ISSUE_LABEL: upstream-sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+          # GITHUB_TOKEN cannot push commits that touch .github/workflows.
+          # Add a PAT with `repo` + `workflow` scopes as SYNC_TOKEN to allow that.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Fetch upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          behind=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse --short upstream/${UPSTREAM_BRANCH})" >> "$GITHUB_OUTPUT"
+          if [ "$behind" -eq 0 ]; then
+            echo "Already up to date with upstream."
+            echo "result=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git merge --no-edit "upstream/${UPSTREAM_BRANCH}" \
+               -m "chore: merge upstream ${UPSTREAM_REPO}@$(git rev-parse --short upstream/${UPSTREAM_BRANCH})"; then
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "conflicts<<EOF"
+              git diff --name-only --diff-filter=U
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push merge
+        id: push
+        if: steps.merge.outputs.result == 'merged'
+        run: |
+          if git push origin "HEAD:${FORK_BRANCH}" 2> push.log; then
+            echo "result=pushed" >> "$GITHUB_OUTPUT"
+          else
+            cat push.log
+            {
+              echo "error<<EOF"
+              cat push.log
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "result=failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update issue
+        if: steps.merge.outputs.result == 'conflict' || steps.push.outputs.result == 'failed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_RESULT: ${{ steps.merge.outputs.result }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          PUSH_ERROR: ${{ steps.push.outputs.error }}
+          BEHIND: ${{ steps.merge.outputs.behind }}
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create "$ISSUE_LABEL" --color D93F0B \
+            --description "Automatic upstream sync failed" 2>/dev/null || true
+
+          if [ "$MERGE_RESULT" = "conflict" ]; then
+            reason="Merging \`${UPSTREAM_REPO}@${UPSTREAM_SHA}\` into \`${FORK_BRANCH}\` produced conflicts."
+            details=$(printf '### Conflicting files\n\n%s\n' "$(echo "$CONFLICTS" | sed 's/^/- `/; s/$/`/')")
+          else
+            reason="The merge succeeded but pushing to \`${FORK_BRANCH}\` was rejected (upstream likely changed \`.github/workflows\`; add a \`SYNC_TOKEN\` secret with the \`workflow\` scope)."
+            details=$(printf '### Push error\n\n```\n%s\n```\n' "$PUSH_ERROR")
+          fi
+
+          body=$(cat <<BODY
+          ${reason}
+
+          The fork is **${BEHIND}** commit(s) behind upstream \`${UPSTREAM_BRANCH}\`.
+
+          ${details}
+
+          ### How to fix
+
+          In a local checkout, run Claude Code and invoke the skill:
+
+          \`\`\`
+          /resolve-upstream-conflicts
+          \`\`\`
+
+          It merges \`upstream/${UPSTREAM_BRANCH}\` on a branch, resolves the conflicts, verifies the build and opens a PR that closes this issue.
+
+          Workflow run: ${RUN_URL}
+          BODY
+          )
+
+          existing=$(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "Upstream sync failed" --label "$ISSUE_LABEL" --body "$body"
+          fi
+          exit 1
+
+      - name: Close resolved sync issues
+        if: steps.push.outputs.result == 'pushed' || steps.merge.outputs.result == 'up-to-date'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[].number'); do
+            gh issue close "$n" --comment "Fork is in sync with upstream again."
+          done
