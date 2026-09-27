@@ -33,7 +33,7 @@ Discord often can't play original recordings inline (HEVC, very large files, or 
 - Otherwise (long clips, or attaching turned off), the post **links directly** to the preview file, and Discord shows its player for that link.
 - Password-protected videos get no preview; the card shows the poster instead.
 
-Set the upload limit on the Integrations page to match your server's boost level: 10 MB with no boost, 50 MB at level 2, 100 MB at level 3.
+Set the upload limit on the Integrations page to match your server's boost level: 20 MB with no boost, 50 MB at level 2, 100 MB at level 3.
 
 #### Fixing existing transcodes
 

@@ -18,6 +18,7 @@ from fireshare.models import Video, VideoInfo, VideoTagLink, VideoGameLink, Cust
 AVATAR_URL = "https://github.com/fireshare-app/fireshare/raw/develop/app/client/src/assets/logo_square.png"
 DEFAULT_COLOR = 0xF26A21  # Fireshare orange
 DISCORD_ID_RE = re.compile(r"^\d{17,20}$")
+MIN_UPLOAD_LIMIT_MB = 20
 
 
 # --- "already posted" bookkeeping -------------------------------------------
@@ -152,7 +153,8 @@ def _preview_source(video):
 
 def ensure_preview(video, config, allow_encode=True):
     """Create (or reuse) the Discord preview clip. Returns (path, fits_limit) or (None, False)."""
-    limit_mb = int(config.get("integrations", {}).get("discord_upload_limit_mb", 10) or 10)
+    # Discord's free limit is 20 MB; 1.8.5 wrote 10 into existing configs, so lift anything lower
+    limit_mb = max(MIN_UPLOAD_LIMIT_MB, int(config.get("integrations", {}).get("discord_upload_limit_mb", 20) or 20))
     source = _preview_source(video)
     if not source.exists():
         return (None, False)

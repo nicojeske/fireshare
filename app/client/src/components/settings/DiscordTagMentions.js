@@ -7,7 +7,7 @@ const DEV_MODE_URL =
   'https://support.discord.com/hc/en-us/articles/206346498-Where-can-I-find-my-User-Server-Message-ID'
 
 const UPLOAD_LIMITS = [
-  { value: 10, label: '10 MB (no boost)' },
+  { value: 20, label: '20 MB (no boost)' },
   { value: 50, label: '50 MB (boost level 2)' },
   { value: 100, label: '100 MB (boost level 3)' },
 ]
@@ -20,7 +20,8 @@ const DiscordTagMentions = ({ integrations = {}, onChange }) => {
   const mentions = integrations.discord_tag_mentions || {}
   const pingOnTagAdd = integrations.discord_ping_on_tag_add ?? true
   const attachPreview = integrations.discord_attach_preview ?? true
-  const uploadLimit = integrations.discord_upload_limit_mb ?? 10
+  // Anything below 20 MB (Discord's free limit) is treated as 20 by the server too
+  const uploadLimit = Math.max(20, integrations.discord_upload_limit_mb ?? 20)
 
   React.useEffect(() => {
     TagService.getTags()

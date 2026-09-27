@@ -1165,7 +1165,7 @@ def remux_faststart(path):
         tmp.unlink()
     return False
 
-def create_discord_preview(video_path, out_path, limit_mb=10):
+def create_discord_preview(video_path, out_path, limit_mb=20):
     """
     Encode a small H.264 clip Discord can play inline, sized to fit the upload limit.
     Returns (ok, fits_limit).
