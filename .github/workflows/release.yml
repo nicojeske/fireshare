@@ -1,9 +1,10 @@
 name: Release
 
 # Fork-only release pipeline: on a version tag (v1.2.3, v1.2.3-rc.1, ...) build
-# the full and lite images for amd64/arm64, push them to GHCR and create a
-# GitHub release. Upstream's docker-publish-* workflows target upstream's Docker
-# Hub image and are disabled in this fork.
+# the lite image for amd64/arm64, push it to GHCR and create a GitHub
+# release. The full image isn't needed by this fork, so it isn't built.
+# Upstream's docker-publish-* workflows target upstream's Docker Hub image and
+# are disabled in this fork.
 on:
   push:
     tags:
@@ -27,12 +28,11 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.variant }} (${{ matrix.platform }})
+    name: Build lite (${{ matrix.platform }})
     runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        variant: [full, lite]
         platform: [linux/amd64, linux/arm64]
     steps:
       - name: Prepare
@@ -40,11 +40,6 @@ jobs:
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-          if [ "${{ matrix.variant }}" = "lite" ]; then
-            echo "DOCKERFILE=Dockerfile.lite" >> "$GITHUB_ENV"
-          else
-            echo "DOCKERFILE=Dockerfile" >> "$GITHUB_ENV"
-          fi
 
       - name: Check out the repo
         uses: actions/checkout@v4
@@ -72,12 +67,12 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ env.DOCKERFILE }}
+          file: Dockerfile.lite
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.variant }}-${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}-${{ env.PLATFORM_PAIR }}
+          cache-from: type=gha,scope=lite-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=lite-${{ env.PLATFORM_PAIR }}
 
       - name: Export digest
         run: |
@@ -88,18 +83,15 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ matrix.variant }}-${{ env.PLATFORM_PAIR }}
+          name: digests-lite-${{ env.PLATFORM_PAIR }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
-    name: Push ${{ matrix.variant }} manifest
+    name: Push lite manifest
     runs-on: ubuntu-latest
     needs: build
-    strategy:
-      matrix:
-        variant: [full, lite]
     steps:
       - name: Prepare
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -108,7 +100,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-${{ matrix.variant }}-*
+          pattern: digests-lite-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
@@ -121,8 +113,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 1.2.3, 1.2 and latest (latest/1.2 are skipped for pre-releases);
-      # the lite variant gets a -lite suffix on every tag.
+      # 1.2.3-lite, 1.2-lite and latest-lite (latest/1.2 are skipped for
+      # pre-releases). The -lite suffix keeps existing image references working.
       - name: Extract metadata (tags) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -130,7 +122,7 @@ jobs:
           images: ${{ env.IMAGE }}
           flavor: |
             latest=auto
-            suffix=${{ matrix.variant == 'lite' && '-lite' || '' }},onlatest=true
+            suffix=-lite,onlatest=true
           tags: |
             type=semver,pattern={{version}},value=${{ env.TAG }}
             type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
@@ -159,7 +151,6 @@ jobs:
           ## Docker images
 
           \`\`\`
-          docker pull ${image}:${version}
           docker pull ${image}:${version}-lite
           \`\`\`
           EOF
