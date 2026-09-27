@@ -135,6 +135,12 @@ def delete_video_files(video_id, file_path, link_path, derived_path):
     elif had_derived:
         logger.info(f"Deleted derived directory: {derived_path}")
 
+    try:
+        from .. import discord_notify
+        discord_notify.forget(video_id)
+    except Exception as e:
+        logger.error(f"Could not clear Discord state for video {video_id}: {e}")
+
     for error in errors:
         logger.error(f"Error deleting files for video {video_id}: {error}")
     return errors

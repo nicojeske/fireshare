@@ -75,10 +75,30 @@ def _save_pending(pending):
 
 def queue(video_id):
     """Mark a video to be posted at the next flush (after transcoding)."""
+    if video_id in _load_posted():
+        logger.info(f"Not queueing Discord post for {video_id}: already posted")
+        return
     pending = _load_pending()
-    if video_id not in pending and video_id not in _load_posted():
+    if video_id not in pending:
         pending.append(video_id)
         _save_pending(pending)
+
+def forget(video_id):
+    """Drop a deleted video from the posted/pending lists.
+
+    Video ids are content hashes, so re-uploading the same file after deleting it
+    gives the same id; without this the re-upload would be treated as already posted."""
+    posted = _load_posted()
+    if video_id in posted:
+        posted.discard(video_id)
+        try:
+            with open(_posted_file(), 'w') as f:
+                json.dump(sorted(posted), f)
+        except IOError as e:
+            logger.error(f"Could not save Discord posted list: {e}")
+    pending = _load_pending()
+    if video_id in pending:
+        _save_pending([p for p in pending if p != video_id])
 
 def _acquire_flush_lock():
     lock = _posted_file().with_name('discord_flush.lock')
@@ -405,6 +425,7 @@ def notify_new_video(video_id, config=None, domain=None):
         logger.info(f"Skipping Discord post for {video_id}: video is private")
         return None
     if video_id in _load_posted():
+        logger.info(f"Skipping Discord post for {video_id}: already posted")
         return None
     logger.info(f"Posting to Discord webhook for {video_id}")
     result = _send_video(webhook_url, video, info, config, domain)
