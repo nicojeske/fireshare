@@ -531,9 +531,13 @@ const UploadCard = React.forwardRef(function UploadCard(
         return
       }
       updateQueueItem(item.id, { status: 'error' })
+      // 415: the server probed the file and found no video stream in it.
+      const notVideo = err?.response?.status === 415
       handleAlert({
         type: 'error',
-        message: `An error occurred while uploading ${file.name}.`,
+        message: notVideo
+          ? `${file.name} is not a valid video file.`
+          : `An error occurred while uploading ${file.name}.`,
         open: true,
       })
     }

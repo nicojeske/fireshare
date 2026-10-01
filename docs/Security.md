@@ -248,6 +248,19 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 ---
 
+## Public uploads
+
+Public uploads let anyone who can reach the server upload without signing in. Since
+this release they are **off by default** on new installs. An existing `config.json`
+keeps its setting. When public uploads are on, the admin warnings show it. Turn it
+off with **Allow Public Upload** in Settings.
+
+To let a group of people upload, use [Sign in with Discord](./Users.md#sign-in-with-discord),
+user accounts, or [upload tokens](./UploadTokens.md) instead.
+
+Every video upload is checked with `ffprobe`. Files without a real video stream
+(text files, audio, audio with cover art) are deleted and rejected with HTTP 415.
+
 ## User accounts and permissions
 
 Account creation, per-user permissions, password setup links, and the guardrails that keep an instance from losing its last administrator are documented in [Users, Permissions, and Profiles](./Users.md).

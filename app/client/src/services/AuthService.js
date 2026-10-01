@@ -5,6 +5,7 @@ import Api from './Api'
 let _loggedInPromise = null
 
 class AuthService {
+  discordLoginUrl = '/api/auth/discord/start'
   login(username, password) {
     return Api().post('/api/login', {
       username,

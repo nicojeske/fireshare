@@ -14,7 +14,8 @@ from werkzeug.security import generate_password_hash
 
 from sqlalchemy import func
 
-from .. import db, logger, util, discord_notify
+from .. import db, logger, util, discord_notify, discord_oauth
+from ..constants import PUBLIC_UPLOAD_WARNING, DISCORD_LOGIN_WARNING
 from ..models import Video, VideoInfo, VideoView, GameMetadata, VideoGameLink, VideoTagLink, Image, ImageInfo, ImageGameLink, ImageTagLink, ImageView, TranscodeJob, MediaFolder
 from .. import permissions as perms
 from . import api
@@ -22,6 +23,30 @@ from .helpers import cancel_pending_transcode_jobs, delete_video_files, resolve_
 from .transcoding import _is_pid_running
 from .scan import _game_scan_state
 from .decorators import admin_required, demo_restrict
+
+
+def _discord_login_config_error(integrations):
+    """A message describing invalid Discord login settings, or None."""
+    guild_id = str(integrations.get('discord_login_guild_id') or '').strip()
+    role_id = str(integrations.get('discord_login_required_role_id') or '').strip()
+    if guild_id and not discord_oauth.is_snowflake(guild_id):
+        return 'Discord server ID must be a 17-20 digit number.'
+    if role_id and not discord_oauth.is_snowflake(role_id):
+        return 'Discord role ID must be a 17-20 digit number.'
+    if integrations.get('discord_login_enabled') and not guild_id:
+        return 'A Discord server ID is required to enable Discord login.'
+    preset = integrations.get('discord_login_default_preset', 'contributor')
+    if preset not in perms.PRESETS:
+        return 'Unknown permission preset for Discord accounts.'
+    return None
+
+
+def _sync_warning(message, active):
+    warnings = current_app.config['WARNINGS']
+    if active and message not in warnings:
+        warnings.append(message)
+    elif not active and message in warnings:
+        warnings.remove(message)
 
 
 @api.route('/api/admin/config', methods=["GET", "PUT"])
@@ -40,6 +65,11 @@ def get_or_update_config():
                 'enabled': current_app.config.get('ENABLE_TRANSCODING', False),
                 'gpu_enabled': current_app.config.get('TRANSCODE_GPU', False),
             }
+            # Credentials come from env vars; only whether they are present is exposed.
+            config['discord_login_status'] = {
+                'client_configured': discord_oauth.credentials_configured(),
+                'redirect_uri': current_app.config.get('DISCORD_REDIRECT_URI', ''),
+            }
             # Strip sensitive API keys when the demo account is viewing config
             if demo_mode and current_user.username == 'demo':
                 config.get('integrations', {}).pop('steamgriddb_api_key', None)
@@ -55,7 +85,19 @@ def get_or_update_config():
             return Response(status=400, response='A config must be provided.')
         if not config_path.exists():
             return Response(status=500, response='Could not find a config to update.')
+        # Read-only status blocks the GET adds; they must not be persisted.
+        config.pop('transcoding_status', None)
+        config.pop('discord_login_status', None)
+        error = _discord_login_config_error(config.get('integrations', {}))
+        if error:
+            return Response(status=400, response=error)
         config_path.write_text(json.dumps(config, indent=2))
+
+        _sync_warning(PUBLIC_UPLOAD_WARNING,
+                      config.get('app_config', {}).get('allow_public_upload') and not demo_mode)
+        _sync_warning(DISCORD_LOGIN_WARNING,
+                      config.get('integrations', {}).get('discord_login_enabled')
+                      and not discord_oauth.credentials_configured())
 
         # Check if SteamGridDB API key was added and remove warning if present
         steamgrid_api_key = config.get('integrations', {}).get('steamgriddb_api_key', '')

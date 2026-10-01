@@ -1,5 +1,7 @@
 import base64
 import io
+import json
+import secrets
 import time
 
 import pyotp
@@ -14,6 +16,8 @@ from .api.misc import _get_local_version, _fetch_release_notes
 from .api.decorators import demo_restrict
 from .ip_whitelist import login_ip_required, get_client_ip, is_ip_permitted
 from . import login_throttle
+from . import discord_oauth
+from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
 
 auth = Blueprint('auth', __name__)
@@ -21,11 +25,21 @@ auth = Blueprint('auth', __name__)
 MFA_PENDING_MAX_AGE = 300
 MFA_MAX_ATTEMPTS = 5
 
+# Discord membership is only checked at sign-in, so a session of a Discord-only
+# account is dropped after this long to force a fresh check. With prompt=none the
+# re-login is a single click for someone still in the server.
+DISCORD_REVERIFY_SECONDS = 24 * 3600
+DISCORD_STATE_MAX_AGE = 600
+# Throttle key for failed Discord sign-ins. Not a valid username, so it can never
+# share a counter with a password account.
+DISCORD_THROTTLE_KEY = '@discord'
+
 def _clear_mfa_pending():
     session.pop('mfa_pending_user_id', None)
     session.pop('mfa_pending_at', None)
     session.pop('mfa_attempts', None)
     session.pop('mfa_username', None)
+    session.pop('mfa_via_discord', None)
 
 def _verify_totp(user, code):
     """
@@ -84,6 +98,7 @@ def login():
             session['mfa_pending_at'] = time.time()
             session['mfa_attempts'] = 0
             session['mfa_username'] = user.username
+            session.pop('mfa_via_discord', None)
             return jsonify({'mfa_required': True})
         _clear_mfa_pending()
         login_throttle.clear(client_ip, username)
@@ -132,8 +147,12 @@ def login_mfa():
     user.last_login_at = datetime.utcnow()
     db.session.commit()
     login_throttle.clear(client_ip, pending_username)
+    via_discord = bool(session.get('mfa_via_discord'))
     _clear_mfa_pending()
-    login_user(user, remember=True)
+    # A remember-me cookie would outlive the periodic Discord membership re-check.
+    login_user(user, remember=not via_discord)
+    if via_discord:
+        session['discord_verified_at'] = time.time()
     return jsonify({'authenticated': True})
 
 @auth.route('/api/mfa/status', methods=['GET'])
@@ -243,6 +262,8 @@ def loggedin():
         'permissions': (list(fs_permissions.GRANTABLE_PERMISSIONS) if current_user.admin
                         else sorted(current_user.granted_permissions)),
         'must_change_password': bool(current_user.must_change_password),
+        'has_password': bool(current_user.password),
+        'discord_linked': bool(current_user.discord_id),
         'latest_release': latest_release,
         'login_allowed': login_allowed,
     })
@@ -250,5 +271,153 @@ def loggedin():
 @auth.route('/api/logout', methods=['POST'])
 def logout():
     _clear_mfa_pending()
+    session.pop('discord_verified_at', None)
     logout_user()
     return Response(status=200)
+
+
+def _read_config():
+    config_path = current_app.config['PATHS']['data'] / 'config.json'
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _discord_fail(code, client_ip=None):
+    """Redirect back to the login page with an error code the form translates."""
+    if client_ip is not None:
+        login_throttle.record_failure(client_ip, DISCORD_THROTTLE_KEY)
+    return redirect(f'/login?discord_error={code}', code=302)
+
+
+def _create_discord_user(discord_user, preset):
+    def taken(name):
+        return User.query.filter(db.func.lower(User.username) == name.lower()).first() is not None
+
+    for attempt in range(2):
+        username = discord_oauth.derive_username(discord_user.get('username'), discord_user['id'], taken)
+        user = User(
+            username=username,
+            discord_id=str(discord_user['id']),
+            password=None,
+            admin=False,
+            permissions=fs_permissions.serialize_permissions(fs_permissions.PRESETS[preset]),
+            display_name=fs_permissions.clean_display_name(discord_user.get('global_name')),
+            profile_public=True,
+            created_at=datetime.utcnow(),
+            avatar_version=0,
+            disabled=False,
+        )
+        db.session.add(user)
+        try:
+            db.session.commit()
+        except IntegrityError:
+            # Two first logins racing for the same username (or the same Discord id).
+            db.session.rollback()
+            existing = User.query.filter_by(discord_id=str(discord_user['id'])).first()
+            if existing:
+                return existing
+            if attempt:
+                raise
+            continue
+        current_app.logger.info(
+            f"Created user '{user.username}' from Discord account {user.discord_id} (preset {preset})"
+        )
+        return user
+
+
+@auth.route('/api/auth/discord/start', methods=['GET'])
+@login_ip_required
+def discord_start():
+    if not discord_oauth.discord_login_settings(_read_config()):
+        return Response(status=404)
+    if login_throttle.retry_after(get_client_ip(), DISCORD_THROTTLE_KEY):
+        return _discord_fail('throttled')
+    state = secrets.token_urlsafe(32)
+    session['discord_oauth_state'] = state
+    session['discord_oauth_at'] = time.time()
+    return redirect(discord_oauth.build_authorize_url(state), code=302)
+
+
+@auth.route('/api/auth/discord/callback', methods=['GET'])
+@login_ip_required
+def discord_callback():
+    settings = discord_oauth.discord_login_settings(_read_config())
+    if not settings:
+        return Response(status=404)
+    client_ip = get_client_ip()
+    if login_throttle.retry_after(client_ip, DISCORD_THROTTLE_KEY):
+        return _discord_fail('throttled')
+
+    expected_state = session.pop('discord_oauth_state', None)
+    started_at = session.pop('discord_oauth_at', 0)
+    state = request.args.get('state', '')
+    if (not expected_state or not secrets.compare_digest(expected_state, state)
+            or time.time() - started_at > DISCORD_STATE_MAX_AGE):
+        return _discord_fail('state', client_ip)
+
+    code = request.args.get('code')
+    if request.args.get('error') or not code:
+        return _discord_fail('denied')
+
+    try:
+        token = discord_oauth.exchange_code(code)
+        try:
+            discord_user = discord_oauth.fetch_user(token)
+            member = discord_oauth.fetch_member(token, settings['guild_id'])
+        finally:
+            discord_oauth.revoke(token)
+    except discord_oauth.DiscordError as e:
+        current_app.logger.warning(f"Discord login failed: {e}")
+        return _discord_fail('unavailable')
+
+    discord_id = str(discord_user['id'])
+    # Matched only on the Discord id: a Discord name equal to a local username must
+    # never open that local account.
+    user = User.query.filter_by(discord_id=discord_id).first()
+
+    if not discord_oauth.member_allowed(member, settings['role_id']):
+        if user and settings['disable_on_leave'] and not user.disabled and not user.admin:
+            user.disabled = True
+            db.session.commit()
+            current_app.logger.info(
+                f"Disabled user '{user.username}': no longer an eligible member of the Discord server"
+            )
+        reason = 'missing_role' if member and not member.get('pending') else 'not_member'
+        return _discord_fail(reason, client_ip)
+
+    if user is None:
+        user = _create_discord_user(discord_user, settings['preset'])
+    if user.disabled:
+        return _discord_fail('disabled', client_ip)
+
+    login_throttle.clear(client_ip, DISCORD_THROTTLE_KEY)
+    if user.mfa_enabled and user.totp_secret:
+        session['mfa_pending_user_id'] = user.id
+        session['mfa_pending_at'] = time.time()
+        session['mfa_attempts'] = 0
+        session['mfa_username'] = user.username
+        session['mfa_via_discord'] = True
+        return redirect('/login?mfa=1', code=302)
+
+    _clear_mfa_pending()
+    # No remember-me cookie: it would outlive the periodic membership re-check.
+    login_user(user, remember=False)
+    session['discord_verified_at'] = time.time()
+    _record_login(user)
+    return redirect('/', code=302)
+
+
+@auth.before_app_request
+def _expire_unverified_discord_sessions():
+    """Log out Discord-only accounts whose membership was last checked too long ago."""
+    if not current_user.is_authenticated:
+        return
+    if not current_user.discord_id or current_user.password:
+        return
+    verified_at = session.get('discord_verified_at')
+    if not verified_at or time.time() - verified_at > DISCORD_REVERIFY_SECONDS:
+        session.pop('discord_verified_at', None)
+        logout_user()

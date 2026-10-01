@@ -49,7 +49,8 @@ from . import api
 from .decorators import json_body, require_perm
 from .helpers import sanitize_upload_folder, secure_filename
 from .image import SUPPORTED_IMAGE_TYPES, _launch_scan_image
-from .upload import _check_upload_size, _launch_scan_video, _parse_upload_metadata, _reject_duplicate
+from .upload import (_check_upload_size, _launch_scan_video, _parse_upload_metadata, _reject_duplicate,
+                     _reject_non_video)
 
 # Identifies a Fireshare upload token on sight, the way `ghp_` does for GitHub.
 # Secret scanners and log filters can key on it, and a user who pastes the wrong
@@ -473,6 +474,9 @@ def _finish_upload(plan, save_path, token_user):
                            tag_ids=plan['tag_ids'], title=plan['title'],
                            uploaded_by=token_user.id)
     else:
+        rejected = _reject_non_video(save_path)
+        if rejected:
+            return rejected
         duplicate = _reject_duplicate(save_path)
         if duplicate:
             return duplicate

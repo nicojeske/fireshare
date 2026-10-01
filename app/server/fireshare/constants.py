@@ -6,7 +6,7 @@ DEFAULT_CONFIG = {
     "image_defaults": {
       "private": True
     },
-    "allow_public_upload": True,
+    "allow_public_upload": False,
     "allow_public_folder_selection": True,
     "allow_public_game_tag": True,
     "public_upload_folder_name": "public uploads",
@@ -33,6 +33,11 @@ DEFAULT_CONFIG = {
     "generic_webhook_url": "",
     "generic_webhook_payload": {},
     "steamgriddb_api_key": "",
+    "discord_login_enabled": False,
+    "discord_login_guild_id": "",
+    "discord_login_required_role_id": "",
+    "discord_login_default_preset": "contributor",
+    "discord_login_disable_on_leave": False,
   },
   "rss_config": {
     "title": "Fireshare Feed",
@@ -46,6 +51,15 @@ DEFAULT_CONFIG = {
     "enable_1080p": True,
   }
 }
+
+PUBLIC_UPLOAD_WARNING = (
+    "Public uploads are enabled: anyone who can reach this server can upload without "
+    "signing in. Turn off \"Allow Public Upload\" in Settings if that is not intended."
+)
+DISCORD_LOGIN_WARNING = (
+    "Discord login is enabled in settings but DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET "
+    "or DISCORD_REDIRECT_URI (or DOMAIN) is not set, so the button is hidden."
+)
 
 SUPPORTED_FILE_TYPES = ['mp4', 'm4v', 'mov', 'webm']
 SUPPORTED_FILE_EXTENSIONS = ['.mp4', '.m4v', '.mov', '.webm']

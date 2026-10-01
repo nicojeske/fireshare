@@ -443,6 +443,11 @@ const UserManagement = () => {
                       managed by environment
                     </Typography>
                   )}
+                  {u.discord_linked && (
+                    <Typography sx={{ fontSize: 11, color: '#8B93F8' }}>
+                      signs in with Discord
+                    </Typography>
+                  )}
                 </TableCell>
                 <TableCell align="center">
                   <Typography sx={{ fontSize: 12, color: u.mfa_enabled ? '#1DB45A' : 'rgba(255,255,255,0.35)' }}>

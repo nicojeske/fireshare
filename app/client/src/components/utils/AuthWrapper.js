@@ -32,6 +32,8 @@ const AuthWrapper = ({ children, redirect }) => {
                 name: response.name,
                 avatar_url: response.avatar_url,
                 must_change_password: response.must_change_password,
+                has_password: response.has_password,
+                discord_linked: response.discord_linked,
               }
             : null,
         )

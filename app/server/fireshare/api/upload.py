@@ -50,6 +50,22 @@ def _current_uploader_id():
     return current_user.id if current_user.is_authenticated else None
 
 
+def _reject_non_video(save_path):
+    """
+    Delete the file at save_path and return a 415 response if it holds no video
+    stream; return None when it is a real video.
+    """
+    ok, reason = util.has_video_stream(save_path)
+    if ok:
+        return None
+    try:
+        os.remove(save_path)
+    except OSError as e:
+        logger.warning(f"Could not remove rejected upload {save_path}: {e}")
+    logger.info(f"Rejected upload {save_path}: {reason}")
+    return Response(status=415, response='The uploaded file does not contain a video stream.')
+
+
 def _reject_duplicate(save_path):
     """
     If the file just written to save_path has the same content hash as a video
@@ -179,6 +195,9 @@ def public_upload_video():
         uid = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
         save_path = os.path.join(paths['video'], upload_folder, f"{name_no_type}-{uid}.{filetype}")
     file.save(save_path)
+    rejected = _reject_non_video(save_path)
+    if rejected:
+        return rejected
     duplicate = _reject_duplicate(save_path)
     if duplicate:
         return duplicate
@@ -280,6 +299,9 @@ def public_upload_videoChunked():
             os.remove(save_path)
         return Response(status=500, response="Error reassembling file")
 
+    rejected = _reject_non_video(save_path)
+    if rejected:
+        return rejected
     duplicate = _reject_duplicate(save_path)
     if duplicate:
         return duplicate
@@ -383,6 +405,9 @@ def upload_video():
         uid = ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
         save_path = os.path.join(paths['video'], upload_folder, f"{name_no_type}-{uid}.{filetype}")
     file.save(save_path)
+    rejected = _reject_non_video(save_path)
+    if rejected:
+        return rejected
     duplicate = _reject_duplicate(save_path)
     if duplicate:
         return duplicate
@@ -490,6 +515,9 @@ def upload_videoChunked():
             os.remove(save_path)
         return Response(status=500, response="Error reassembling file")
 
+    rejected = _reject_non_video(save_path)
+    if rejected:
+        return rejected
     duplicate = _reject_duplicate(save_path)
     if duplicate:
         return duplicate

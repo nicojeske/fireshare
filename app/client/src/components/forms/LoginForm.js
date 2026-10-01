@@ -1,5 +1,5 @@
 import React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Box, Typography, TextField, Button, Divider } from '@mui/material'
 import { AuthService, ConfigService } from '../../services'
 import SnackbarAlert from '../alert/SnackbarAlert'
@@ -33,6 +33,27 @@ const submitButtonSx = {
   '&.Mui-disabled': { bgcolor: 'rgba(38, 132, 255, 0.2)', color: 'rgba(255,255,255,0.3)' },
 }
 
+// Codes the Discord callback redirects back with (auth.py, _discord_fail).
+const DISCORD_ERRORS = {
+  denied: 'Discord sign-in was cancelled.',
+  state: 'Your Discord sign-in expired. Please try again.',
+  not_member: 'Your Discord account is not a member of this server.',
+  missing_role: 'Your Discord account does not have the role required to sign in.',
+  disabled: 'This account has been disabled. Contact an administrator.',
+  throttled: 'Too many failed sign-in attempts. Try again in a few minutes.',
+  unavailable: 'Discord could not be reached. Please try again.',
+}
+
+const discordButtonSx = {
+  py: 1.25,
+  borderRadius: '10px',
+  fontSize: 15,
+  fontWeight: 600,
+  textTransform: 'none',
+  bgcolor: '#5865F2',
+  '&:hover': { bgcolor: '#4752c4' },
+}
+
 const LoginForm = function () {
   const demoMode = getSetting('demo_mode')
   const [username, setUsername] = React.useState('')
@@ -41,7 +62,34 @@ const LoginForm = function () {
   const [code, setCode] = React.useState('')
   const [loading, setLoading] = React.useState(false)
   const [alert, setAlert] = React.useState({ open: false })
+  const [discordEnabled, setDiscordEnabled] = React.useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+
+  React.useEffect(() => {
+    ConfigService.getConfig()
+      .then((res) => setDiscordEnabled(!!res.data?.discord_login_enabled))
+      .catch(() => setDiscordEnabled(false))
+  }, [])
+
+  React.useEffect(() => {
+    const discordError = searchParams.get('discord_error')
+    const mfa = searchParams.get('mfa')
+    if (!discordError && !mfa) return
+    if (discordError) {
+      setAlert({
+        type: 'warning',
+        message: DISCORD_ERRORS[discordError] || 'Discord sign-in failed.',
+        open: true,
+      })
+    }
+    // The Discord callback already passed the first step and parked an MFA login.
+    if (mfa === '1') {
+      setStep('mfa')
+      setCode('')
+    }
+    setSearchParams({}, { replace: true })
+  }, [searchParams, setSearchParams])
 
   async function completeLogin() {
     const config = (await ConfigService.getConfig()).data
@@ -231,6 +279,23 @@ const LoginForm = function () {
           >
             {loading ? 'Signing in…' : 'Sign in'}
           </Button>
+          {discordEnabled && (
+            <>
+              <Divider sx={{ borderColor: 'rgba(194, 224, 255, 0.08)', color: 'rgba(194, 224, 255, 0.4)', fontSize: 12 }}>
+                or
+              </Divider>
+              {/* A real navigation, not an XHR: the server redirects to Discord. */}
+              <Button
+                variant="contained"
+                size="large"
+                fullWidth
+                href={AuthService.discordLoginUrl}
+                sx={discordButtonSx}
+              >
+                Sign in with Discord
+              </Button>
+            </>
+          )}
         </Box>
       ) : (
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>

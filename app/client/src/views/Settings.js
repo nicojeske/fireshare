@@ -47,6 +47,7 @@ import GameSearch from '../components/game/GameSearch'
 import SecuritySettings from '../components/settings/SecuritySettings'
 import UploadTokens from '../components/settings/UploadTokens'
 import DiscordTagMentions from '../components/settings/DiscordTagMentions'
+import DiscordLogin from '../components/settings/DiscordLogin'
 import ChangePassword from '../components/settings/ChangePassword'
 import UserManagement from '../components/settings/UserManagement'
 import SidebarPagesEditor from '../components/settings/SidebarPagesEditor'
@@ -939,6 +940,19 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
 
                   <Divider />
 
+                  <DiscordLogin
+                    integrations={updatedConfig.integrations || {}}
+                    status={updatedConfig.discord_login_status || {}}
+                    onChange={(patch) =>
+                      setUpdatedConfig((prev) => ({
+                        ...prev,
+                        integrations: { ...prev.integrations, ...patch },
+                      }))
+                    }
+                  />
+
+                  <Divider />
+
                   <TextField
                     size="small"
                     label="Generic Webhook URL"
@@ -1620,8 +1634,13 @@ const Settings = ({ isAdmin, currentUser, can = () => false }) => {
 
               {activeTab === 'security' && (
                 <Stack spacing={4} sx={{ pt: 1 }}>
-                  <ChangePassword />
-                  <Divider />
+                  {/* Discord-only accounts have no password to change. */}
+                  {currentUser?.has_password !== false && (
+                    <>
+                      <ChangePassword />
+                      <Divider />
+                    </>
+                  )}
                   <SecuritySettings />
                   {/* Only an account that may upload has anything to mint a token for;
                       the routes behind this pane enforce the same permission. */}

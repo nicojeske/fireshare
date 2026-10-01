@@ -32,6 +32,10 @@ class User(UserMixin, db.Model):
     invite_expires_at = db.Column(db.DateTime(), nullable=True)
     created_at = db.Column(db.DateTime(), nullable=True)
     last_login_at = db.Column(db.DateTime(), nullable=True)
+    # Discord snowflake for accounts that sign in with Discord. Accounts are only
+    # ever matched on this, never on username, so a Discord name cannot claim an
+    # existing local account.
+    discord_id = db.Column(db.String(32), nullable=True, unique=True, index=True)
 
     # Profile
     display_name = db.Column(db.String(64), nullable=True)
@@ -150,6 +154,7 @@ class User(UserMixin, db.Model):
             "disabled": bool(self.disabled),
             "env_managed": bool(self.env_managed),
             "mfa_enabled": bool(self.mfa_enabled),
+            "discord_linked": bool(self.discord_id),
             "must_change_password": bool(self.must_change_password),
             "profile_public": bool(self.profile_public),
             "avatar_url": self.avatar_url(),

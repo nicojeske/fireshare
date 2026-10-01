@@ -161,6 +161,50 @@ Fireshare refuses, server-side, to:
 Disabling an account ends its access immediately, including any active session
 and any "remember me" cookie.
 
+## Sign in with Discord
+
+Members of your Discord server can sign in with their Discord account instead of a
+password. A Fireshare account is created for them the first time they sign in, so
+you don't hand out passwords or create accounts by hand.
+
+### Setup
+
+1. In the [Discord Developer Portal](https://discord.com/developers/applications),
+   create an application. Under **OAuth2**, copy the client ID and secret, and add
+   `https://<your DOMAIN>/api/auth/discord/callback` as a redirect. No bot is needed.
+2. Set `DISCORD_CLIENT_ID`, `DISCORD_CLIENT_SECRET` and `DOMAIN` (or
+   `DISCORD_REDIRECT_URI`) in the environment and restart.
+3. In **Settings → Integrations → Sign in with Discord**:
+   - enter your **Server ID** (Discord Developer Mode, then right-click the server → Copy ID),
+   - optionally a **Role ID** that people must have,
+   - choose the permission preset for new accounts (Contributor by default),
+   - tick **Enable**, then save.
+
+The login page then shows a **Sign in with Discord** button. Fireshare asks Discord
+for the `identify` and `guilds.members.read` scopes and only keeps the Discord user
+ID. The access token is revoked straight after sign-in.
+
+### How accounts are matched
+
+- Accounts are matched only by Discord user ID, never by username. A Discord user
+  called `nick` does not get into an existing local account `nick`; they get `nick-2`.
+- The username comes from the Discord username, limited to letters, digits, `_`,
+  `.` and `-`. If that leaves nothing usable or a reserved name, it becomes
+  `discord-<last 6 digits of the ID>`. It is never renamed later.
+- New accounts are never administrators. Change permissions afterwards in
+  **Settings → Users** like any other account.
+- Discord accounts have no password, so password login doesn't work for them, and
+  **Change password** is hidden. Two-factor authentication still works if they set it up.
+
+### When someone leaves the server
+
+Membership and the required role are checked at every sign-in. A Discord session
+also expires after 24 hours, which forces a fresh check (one click if they're still
+a member). With **Disable the account when someone leaves** ticked, a failed check
+disables the account. That also stops its upload tokens, and an admin has to
+re-enable it. Without it, sign-in is refused but the account stays enabled, so its
+upload tokens keep working until it is disabled by hand.
+
 ## LDAP has been removed
 
 LDAP authentication is gone. Every account is a local account.

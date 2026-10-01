@@ -10,7 +10,7 @@ from flask_login import login_required, current_user
 from .. import db, logger
 from ..models import Video, VideoInfo
 from ..cli import send_generic_webhook
-from .. import discord_notify
+from .. import discord_notify, discord_oauth
 from . import api
 from .decorators import admin_required, demo_restrict, strict_admin_required
 
@@ -117,6 +117,7 @@ def config():
             demo_mode and current_user.is_authenticated and current_user.username == 'demo'
         )
         public_config["transcoding_enabled"] = current_app.config.get('ENABLE_TRANSCODING', False)
+        public_config["discord_login_enabled"] = discord_oauth.discord_login_settings(config) is not None
         limit_mb = current_app.config.get('DEMO_UPLOAD_LIMIT_MB', 0)
         if limit_mb > 0 and current_app.config.get('DEMO_MODE'):
             public_config["upload_limit_mb"] = limit_mb

@@ -221,6 +221,14 @@ def create_app(init_schedule=False):
     #Integrations
     app.config['DISCORD_WEBHOOK_URL'] = os.getenv('DISCORD_WEBHOOK_URL', '')
     app.config['GENERIC_WEBHOOK_URL'] = os.getenv('GENERIC_WEBHOOK_URL', '')
+    # Discord OAuth credentials stay in the environment: config.json is served
+    # back through /api/admin/config, so a client secret must never live there.
+    app.config['DISCORD_CLIENT_ID'] = os.getenv('DISCORD_CLIENT_ID', '').strip()
+    app.config['DISCORD_CLIENT_SECRET'] = os.getenv('DISCORD_CLIENT_SECRET', '').strip()
+    _discord_redirect = os.getenv('DISCORD_REDIRECT_URI', '').strip()
+    if not _discord_redirect and app.config['DOMAIN']:
+        _discord_redirect = f"https://{app.config['DOMAIN']}/api/auth/discord/callback"
+    app.config['DISCORD_REDIRECT_URI'] = _discord_redirect
     raw_payload = os.getenv('GENERIC_WEBHOOK_PAYLOAD')
     if raw_payload:
         try:
@@ -472,7 +480,7 @@ def create_app(init_schedule=False):
             app.logger.error("FATAL: Generic Webhook PAYLOAD must be a JSON object (dictionary).")
             sys.exit(1)
 
-    from .constants import DEFAULT_CONFIG
+    from .constants import DEFAULT_CONFIG, PUBLIC_UPLOAD_WARNING, DISCORD_LOGIN_WARNING
     if 'integrations' not in DEFAULT_CONFIG:
         DEFAULT_CONFIG['integrations'] = {}
 
@@ -494,6 +502,18 @@ def create_app(init_schedule=False):
         f.seek(0)
         json.dump(data, f, indent=2)
         f.truncate()
+
+    # New installs default to no anonymous uploads, but an existing config.json keeps
+    # whatever it had, so surface it instead of flipping it behind the admin's back.
+    if data.get('app_config', {}).get('allow_public_upload') and not app.config['DEMO_MODE']:
+        app.config['WARNINGS'].append(PUBLIC_UPLOAD_WARNING)
+        logger.warning(PUBLIC_UPLOAD_WARNING)
+
+    _discord_login = data.get('integrations', {}).get('discord_login_enabled')
+    if _discord_login and not (app.config['DISCORD_CLIENT_ID'] and app.config['DISCORD_CLIENT_SECRET']
+                               and app.config['DISCORD_REDIRECT_URI']):
+        app.config['WARNINGS'].append(DISCORD_LOGIN_WARNING)
+        logger.warning(DISCORD_LOGIN_WARNING)
 
     with app.app_context():
         # db.create_all()

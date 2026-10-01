@@ -183,6 +183,45 @@ def get_media_info(path):
         logger.warning('Could not extract video info')
         return None
 
+def has_video_stream(path, timeout=30):
+    """
+    Whether ffprobe finds at least one real video stream in the file.
+
+    Upload routes only check the extension, so a renamed text or audio file would
+    otherwise be accepted. Embedded cover art (attached_pic) is a video stream to
+    ffprobe but not a video, so it does not count. Fails closed: if ffprobe is
+    missing, times out, or cannot read the file, the upload is treated as invalid.
+
+    Returns:
+        tuple: (ok: bool, reason: str or None)
+    """
+    if not shutil.which('ffprobe'):
+        logger.error("ffprobe command not found - cannot verify uploaded video")
+        return False, "ffprobe not available"
+    cmd = [
+        'ffprobe', '-v', 'error', '-select_streams', 'v',
+        '-show_entries', 'stream=codec_type:stream_disposition=attached_pic',
+        '-of', 'json', str(path),
+    ]
+    try:
+        result = sp.run(cmd, capture_output=True, timeout=timeout)
+    except sp.TimeoutExpired:
+        logger.warning(f"ffprobe timed out checking {path}")
+        return False, "probe timed out"
+    except OSError as e:
+        logger.warning(f"ffprobe failed on {path}: {e}")
+        return False, "probe failed"
+    if result.returncode != 0:
+        return False, "unreadable media"
+    try:
+        streams = json.loads(result.stdout.decode('utf-8') or '{}').get('streams', [])
+    except (ValueError, UnicodeDecodeError):
+        return False, "unreadable media"
+    for stream in streams:
+        if stream.get('codec_type') == 'video' and stream.get('disposition', {}).get('attached_pic') != 1:
+            return True, None
+    return False, "no video stream"
+
 def get_video_duration(path):
     """
     Get the duration of a video file in seconds.
