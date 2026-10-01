@@ -11,6 +11,7 @@ from fireshare.models import User, Video, VideoInfo, FolderRule, VideoGameLink, 
 from werkzeug.security import generate_password_hash
 from pathlib import Path
 from sqlalchemy import func
+from sqlalchemy.exc import InvalidRequestError
 import time
 import requests
 import re
@@ -1132,16 +1133,20 @@ def transcode_videos(regenerate, video, include_corrupt):
                 util.clear_transcoding_status(paths['data'])
                 return
 
-            # Remove any leftover *.mp4.tmp files from a previous run that crashed
-            # before the temp file could be renamed to its final location.
+            # Remove any leftover *.tmp.mp4 files from a previous run that crashed
+            # before the temp file could be renamed to its final location. One whose
+            # video is locked is a crop or transcode being written right now.
             derived_root = Path(processed_root, "derived")
             if derived_root.exists():
                 for tmp_file in derived_root.glob('**/*.tmp.mp4'):
-                    try:
-                        tmp_file.unlink()
-                        logger.info(f"Removed stale temp transcode file: {tmp_file}")
-                    except OSError as ex:
-                        logger.warning(f"Could not remove stale temp file {tmp_file}: {ex}")
+                    with util.video_lock(tmp_file.parent.name, wait=False) as locked:
+                        if not locked:
+                            continue
+                        try:
+                            tmp_file.unlink()
+                            logger.info(f"Removed stale temp transcode file: {tmp_file}")
+                        except OSError as ex:
+                            logger.warning(f"Could not remove stale temp file {tmp_file}: {ex}")
 
             # Track corrupt videos to skip remaining heights for that video
             corrupt_video_ids = set()
@@ -1159,23 +1164,44 @@ def transcode_videos(regenerate, video, include_corrupt):
 
                 has_attr = f'has_{height}p'
 
-                logger.info(f"[{idx}/{total_jobs}] Transcoding {vi.video_id} to {height}p ({vi.video.path})")
-                success, failure_reason = util.transcode_video_quality(
-                    video_path, transcode_path, height, use_gpu, None, encoder_preference,
-                    data_path=paths['data']
-                )
-                if success:
-                    setattr(vi, has_attr, True)
-                    if is_video_corrupt(vi.video_id):
-                        clear_video_corrupt(vi.video_id)
-                    db.session.add(vi)
-                    db.session.commit()
-                elif failure_reason == 'corruption':
-                    logger.warning(f"Skipping video {vi.video_id} {height}p transcode - source file appears corrupt")
-                    mark_video_corrupt(vi.video_id)
-                    corrupt_video_ids.add(vi.video_id)
-                else:
-                    logger.warning(f"Skipping video {vi.video_id} {height}p transcode - all encoders failed")
+                with util.video_lock(vi.video_id, wait=False) as locked:
+                    if not locked:
+                        # Its crop is being saved, which makes its own transcodes. Anything
+                        # still missing afterwards is picked up by the next run.
+                        logger.info(f"[{idx}/{total_jobs}] Skipping {vi.video_id} {height}p - its crop is being processed")
+                        continue
+
+                    # Re-read now the lock is held: a crop may have been saved, and its
+                    # transcodes made, since the work list was built.
+                    try:
+                        db.session.refresh(vi)
+                    except InvalidRequestError:
+                        continue  # deleted since the work list was built
+                    if transcode_path.exists() and not regenerate:
+                        continue
+                    # A cropped video's transcodes are made from the crop, as the crop
+                    # pipeline makes them. From the original they would play the whole
+                    # uncut video to anyone moved down to a lower quality.
+                    cropped_path = derived_path / f"{vi.video_id}-cropped.mp4"
+                    source_path = cropped_path if vi.has_crop and cropped_path.exists() else video_path
+
+                    logger.info(f"[{idx}/{total_jobs}] Transcoding {vi.video_id} to {height}p ({vi.video.path})")
+                    success, failure_reason = util.transcode_video_quality(
+                        source_path, transcode_path, height, use_gpu, None, encoder_preference,
+                        data_path=paths['data']
+                    )
+                    if success:
+                        setattr(vi, has_attr, True)
+                        if is_video_corrupt(vi.video_id):
+                            clear_video_corrupt(vi.video_id)
+                        db.session.add(vi)
+                        db.session.commit()
+                    elif failure_reason == 'corruption':
+                        logger.warning(f"Skipping video {vi.video_id} {height}p transcode - source file appears corrupt")
+                        mark_video_corrupt(vi.video_id)
+                        corrupt_video_ids.add(vi.video_id)
+                    else:
+                        logger.warning(f"Skipping video {vi.video_id} {height}p transcode - all encoders failed")
 
             util.clear_transcoding_status(paths['data'])
             logger.info("Transcoding complete")

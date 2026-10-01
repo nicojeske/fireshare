@@ -43,8 +43,8 @@ from .. import db, logger
 from .. import permissions as P
 from ..constants import SUPPORTED_FILE_TYPES
 from ..ip_whitelist import get_client_ip
-from ..models import (FolderRule, GameMetadata, Image, ImageFolderRule, UploadToken, User,
-                      Video)
+from ..models import (CustomTag, FolderRule, GameMetadata, Image, ImageFolderRule, ImageInfo,
+                      ImageTagLink, UploadToken, User, Video, VideoInfo, VideoTagLink)
 from . import api
 from .decorators import json_body, require_perm
 from .helpers import sanitize_upload_folder, secure_filename
@@ -693,14 +693,56 @@ def token_upload_check(token_user):
     })
 
 
+def _offerable_tags(user):
+    """The tags an upload from this account may be offered, by name.
+
+    /api/tags cannot serve an upload tool. It does not recognise upload tokens,
+    so it answers them as it would an anonymous visitor: only tags already on a
+    public video. A tag created a moment ago is on nothing yet, and it is
+    exactly the one somebody setting up a folder has come to choose.
+
+    So this keeps /api/tags' rule about who may see what, and changes only what
+    it gets wrong for an uploader. An account that can view private media sees
+    every tag, as it would in the browser. Any other account sees the tags that
+    are on something public, plus the ones on nothing at all — an unused tag
+    gives away nothing about private media. What stays hidden is only what
+    /api/tags hides as well: a tag that appears solely on private media.
+    """
+    tags = CustomTag.query.order_by(CustomTag.name).all()
+    if user.can(P.VIEW_PRIVATE):
+        return tags
+
+    public_videos = (
+        db.session.query(VideoTagLink.tag_id)
+        .join(Video, Video.video_id == VideoTagLink.video_id)
+        .join(VideoInfo, VideoInfo.video_id == VideoTagLink.video_id)
+        .filter(Video.available.is_(True), VideoInfo.private.is_(False))
+    )
+    public_images = (
+        db.session.query(ImageTagLink.tag_id)
+        .join(Image, Image.image_id == ImageTagLink.image_id)
+        .join(ImageInfo, ImageInfo.image_id == ImageTagLink.image_id)
+        .filter(Image.available.is_(True), ImageInfo.private.is_(False))
+    )
+    on_something_public = {tag_id for (tag_id,) in public_videos.union(public_images)}
+    on_anything = {
+        tag_id
+        for (tag_id,) in db.session.query(VideoTagLink.tag_id).union(
+            db.session.query(ImageTagLink.tag_id)
+        )
+    }
+    return [t for t in tags if t.id in on_something_public or t.id not in on_anything]
+
+
 @api.route('/api/upload/token/options', methods=['GET'])
 @upload_token_required
 def token_upload_options(token_user):
-    """The folders and games an upload may name, so a tool can offer real choices.
+    """The folders, games and tags an upload may name, so a tool can offer real choices.
 
     Games are listed in full rather than through /api/games, which hides games
     with nothing linked to them yet: those are exactly the ones an upload might
-    be the first to use, and `game` name resolution already accepts them.
+    be the first to use, and `game` name resolution already accepts them. Tags
+    are listed here for the same reason; see _offerable_tags for which.
     """
     paths = current_app.config['PATHS']
     try:
@@ -749,6 +791,7 @@ def token_upload_options(token_user):
             {'id': g.id, 'name': g.name, 'steamgriddb_id': g.steamgriddb_id}
             for g in games
         ],
+        'tags': [t.json() for t in _offerable_tags(token_user)],
     })
 
 

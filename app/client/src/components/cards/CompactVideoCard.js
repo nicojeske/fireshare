@@ -15,7 +15,15 @@ import FolderIcon from '@mui/icons-material/Folder'
 import CheckIcon from '@mui/icons-material/Check'
 import CloseIcon from '@mui/icons-material/Close'
 import { CopyToClipboard } from 'react-copy-to-clipboard'
-import { getPublicWatchUrl, toHHMMSS, getVideoUrl, getSetting, getPosterUrl, getGameAssetUrl } from '../../common/utils'
+import {
+  getPublicWatchUrl,
+  toHHMMSS,
+  getVideoUrl,
+  getMediaVersion,
+  getSetting,
+  getPosterUrl,
+  getGameAssetUrl,
+} from '../../common/utils'
 import { GameService, VideoService, ConfigService } from '../../services'
 import UpdateDetailsModal from '../modal/UpdateDetailsModal'
 import DeleteVideoModal from '../modal/DeleteVideoModal'
@@ -97,14 +105,15 @@ const CompactVideoCard = ({
     const v = videoRef.current
     if (!v) return
     if (hover && !isLocked) {
-      const { has_480p, has_720p, has_1080p } = intVideo?.info || video.info || {}
-      v.src = has_480p
-        ? getVideoUrl(video.video_id, '480p', video.extension)
-        : has_720p
-          ? getVideoUrl(video.video_id, '720p', video.extension)
-          : has_1080p
-            ? getVideoUrl(video.video_id, '1080p', video.extension)
-            : getVideoUrl(video.video_id, 'original', video.extension)
+      const info = intVideo?.info || video.info || {}
+      const version = getMediaVersion(info)
+      v.src = info.has_480p
+        ? getVideoUrl(video.video_id, '480p', video.extension, version)
+        : info.has_720p
+          ? getVideoUrl(video.video_id, '720p', video.extension, version)
+          : info.has_1080p
+            ? getVideoUrl(video.video_id, '1080p', video.extension, version)
+            : getVideoUrl(video.video_id, 'original', video.extension, version)
       v.muted = true
       v.play().catch(() => {})
     } else {
