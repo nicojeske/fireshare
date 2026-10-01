@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import posixpath
@@ -50,117 +51,150 @@ def _delete_if_exists(path):
         path.unlink()
 
 
-def _clear_crop(video, video_info, paths, had_480p, had_720p, had_1080p):
-    """Delete all crop-related files and reset DB flags, then re-transcode from original."""
-    derived_dir = paths["processed"] / "derived" / video.video_id
-    _delete_if_exists(derived_dir / f"{video.video_id}-cropped.mp4")
-    _delete_if_exists(derived_dir / f"{video.video_id}-480p.mp4")
-    _delete_if_exists(derived_dir / f"{video.video_id}-720p.mp4")
-    _delete_if_exists(derived_dir / f"{video.video_id}-1080p.mp4")
-
+def _reset_derived_videos(video_id, video_info, derived_dir):
+    """Delete the crop and the transcodes, and mark them all missing."""
+    for suffix in ('cropped', '480p', '720p', '1080p'):
+        _delete_if_exists(derived_dir / f"{video_id}-{suffix}.mp4")
     video_info.has_crop = False
     video_info.has_480p = False
     video_info.has_720p = False
     video_info.has_1080p = False
     db.session.commit()
 
-    # Regenerate thumbnail from the original video
-    original_path = paths["processed"] / "video_links" / f"{video.video_id}{video.extension}"
+
+def _transcoding_settings(paths):
+    """The transcoding section of config.json, as the scheduled scan reads it."""
+    config_path = paths['data'] / 'config.json'
+    if not config_path.exists():
+        return {}
+    with open(config_path) as f:
+        return json.load(f).get('transcoding', {})
+
+
+def _wanted_heights(video_info, paths, had_480p, had_720p, had_1080p):
+    """
+    The transcodes to make once a crop is saved or cleared: the ones the video had,
+    plus any the scheduled scan would make. A save that lands while an earlier one is
+    still being processed finds the flags already reset, so what the video had is not
+    enough on its own, and the earlier save's thread stops without making them.
+    """
+    heights = {h for h, had in ((480, had_480p), (720, had_720p), (1080, had_1080p)) if had}
+    if current_app.config.get('ENABLE_TRANSCODING'):
+        transcoding = _transcoding_settings(paths)
+        if transcoding.get('auto_transcode', True):
+            # Same rule as the scan: only heights below the source's, or all of them
+            # when its height is unknown.
+            heights |= {h for h in (480, 720, 1080)
+                        if transcoding.get(f'enable_{h}p', True) and (not video_info.height or video_info.height > h)}
+    return sorted(heights)
+
+
+def _thumbnail_skip():
     thumbnail_skip = current_app.config.get('THUMBNAIL_VIDEO_LOCATION') or 0
     if thumbnail_skip > 0 and thumbnail_skip <= 100:
-        thumbnail_skip = thumbnail_skip / 100
-    else:
-        thumbnail_skip = 0
-    poster_time = int((video_info.duration or 0) * thumbnail_skip)
-    util.create_poster(original_path, derived_dir / "poster.jpg", poster_time)
+        return thumbnail_skip / 100
+    return 0
 
-    # Re-transcode quality variants from the original if they existed before
-    if had_480p or had_720p or had_1080p:
-        _retranscode_async(video.video_id, original_path, paths, had_480p, had_720p, had_1080p)
+
+def _clear_crop(video, video_info, paths, had_480p, had_720p, had_1080p):
+    """Delete all crop-related files and reset DB flags, then re-transcode from original."""
+    derived_dir = paths["processed"] / "derived" / video.video_id
+    _reset_derived_videos(video.video_id, video_info, derived_dir)
+
+    # The thread also regenerates the thumbnail from the original, and runs even with no
+    # transcodes to make, so it removes a crop that was still being made.
+    heights = _wanted_heights(video_info, paths, had_480p, had_720p, had_1080p)
+    _rebuild_derived_async(video, paths, heights, thumbnail_skip=_thumbnail_skip())
 
 
 def _apply_crop_async(video, video_info, start_time, end_time, paths):
     """Clear old crop files, then create new crop and re-transcode in a background thread."""
-    had_480p = video_info.has_480p
-    had_720p = video_info.has_720p
-    had_1080p = video_info.has_1080p
+    heights = _wanted_heights(video_info, paths, video_info.has_480p, video_info.has_720p, video_info.has_1080p)
 
     derived_dir = paths["processed"] / "derived" / video.video_id
     derived_dir.mkdir(parents=True, exist_ok=True)
 
     # Remove old files and mark flags as pending
-    _delete_if_exists(derived_dir / f"{video.video_id}-cropped.mp4")
-    _delete_if_exists(derived_dir / f"{video.video_id}-480p.mp4")
-    _delete_if_exists(derived_dir / f"{video.video_id}-720p.mp4")
-    _delete_if_exists(derived_dir / f"{video.video_id}-1080p.mp4")
+    _reset_derived_videos(video.video_id, video_info, derived_dir)
 
-    video_info.has_crop = False
-    video_info.has_480p = False
-    video_info.has_720p = False
-    video_info.has_1080p = False
-    db.session.commit()
+    _rebuild_derived_async(video, paths, heights, start_time, end_time, _thumbnail_skip())
 
-    original_path = paths["processed"] / "video_links" / f"{video.video_id}{video.extension}"
-    cropped_path = derived_dir / f"{video.video_id}-cropped.mp4"
+
+def _rebuild_derived_async(video, paths, heights, start_time=None, end_time=None, thumbnail_skip=0):
+    """
+    Make the crop (when start_time or end_time is set), the thumbnail, and then the
+    transcodes in heights, from the crop or from the original when there is none, in a
+    background thread.
+
+    The thread holds the video's lock throughout, so the scheduled scan's transcoder
+    skips the video instead of writing the same files from the uncropped original, and
+    a second save waits for this one instead of racing it. Whichever save is current
+    once the lock is free does the work: a thread whose crop has since been changed or
+    cleared stops at its next step, and the newer save's thread redoes everything.
+    """
     video_id = video.video_id
-
-    app = current_app._get_current_object()
-
-    thumbnail_skip = current_app.config.get('THUMBNAIL_VIDEO_LOCATION') or 0
-    if thumbnail_skip > 0 and thumbnail_skip <= 100:
-        thumbnail_skip = thumbnail_skip / 100
-    else:
-        thumbnail_skip = 0
-
-    def run():
-        success = util.create_video_crop(original_path, cropped_path, start_time, end_time)
-        with app.app_context():
-            vi = VideoInfo.query.filter_by(video_id=video_id).first()
-            if not vi:
-                return
-            if success:
-                vi.has_crop = True
-                db.session.commit()
-                # Regenerate thumbnail from the cropped video
-                crop_duration = (end_time or vi.duration) - (start_time or 0)
-                poster_time = int(crop_duration * thumbnail_skip)
-                util.create_poster(cropped_path, derived_dir / "poster.jpg", poster_time)
-                if had_480p or had_720p or had_1080p:
-                    _retranscode_async(video_id, cropped_path, paths, had_480p, had_720p, had_1080p)
-            else:
-                logger.error(f"Crop failed for video {video_id}")
-
-    import threading
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-
-
-def _retranscode_async(video_id, source_path, paths, do_480p, do_720p, do_1080p):
-    """Transcode quality variants from source_path in a background thread."""
     derived_dir = paths["processed"] / "derived" / video_id
+    original_path = paths["processed"] / "video_links" / f"{video_id}{video.extension}"
+    cropped_path = derived_dir / f"{video_id}-cropped.mp4"
     app = current_app._get_current_object()
+    # The encoder the scheduled scan uses. These were left at their defaults, so a crop's
+    # transcodes always ran on the CPU, even on a server set up for NVENC.
+    use_gpu = current_app.config.get('TRANSCODE_GPU', False)
+    encoder_preference = _transcoding_settings(paths).get('encoder_preference', 'auto')
 
-    heights = []
-    if do_480p:
-        heights.append(480)
-    if do_720p:
-        heights.append(720)
-    if do_1080p:
-        heights.append(1080)
+    def current_info():
+        """The video's info, or None once a newer save has replaced this crop."""
+        vi = VideoInfo.query.filter_by(video_id=video_id).first()
+        return vi if vi and (vi.start_time, vi.end_time) == (start_time, end_time) else None
+
+    def still_current():
+        with app.app_context():
+            return current_info() is not None
 
     def run():
-        for height in heights:
-            out_path = derived_dir / f"{video_id}-{height}p.mp4"
-            success, _ = util.transcode_video_quality(source_path, out_path, height)
+        with util.video_lock(video_id):
             with app.app_context():
-                vi = VideoInfo.query.filter_by(video_id=video_id).first()
-                if vi and success:
-                    setattr(vi, f'has_{height}p', True)
-                    db.session.commit()
+                vi = current_info()
+                if not vi:
+                    return
+                # Cleared again now that the lock is held: a transcode that was part-way
+                # through this video when the save came in has since written its output.
+                _reset_derived_videos(video_id, vi, derived_dir)
+                duration = vi.duration or 0
 
-    import threading
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
+            source_path, source_duration = original_path, duration
+            if start_time is not None or end_time is not None:
+                if not util.create_video_crop(original_path, cropped_path, start_time, end_time):
+                    logger.error(f"Crop failed for video {video_id}")
+                    return
+                with app.app_context():
+                    vi = current_info()
+                    if not vi:
+                        return
+                    vi.has_crop = True
+                    db.session.commit()
+                source_path, source_duration = cropped_path, (end_time or duration) - (start_time or 0)
+
+            # Regenerate thumbnail from whichever file now plays
+            if not still_current():
+                return
+            util.create_poster(source_path, derived_dir / "poster.jpg", int(source_duration * thumbnail_skip))
+
+            for height in heights:
+                if not still_current():
+                    return
+                success, _ = util.transcode_video_quality(
+                    source_path, derived_dir / f"{video_id}-{height}p.mp4", height, use_gpu, None, encoder_preference
+                )
+                with app.app_context():
+                    vi = current_info()
+                    if not vi:
+                        return
+                    if success:
+                        setattr(vi, f'has_{height}p', True)
+                        db.session.commit()
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 @api.route('/api/videos')

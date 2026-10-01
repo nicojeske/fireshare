@@ -1,4 +1,7 @@
 import os
+import fcntl
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 import json
 import subprocess as sp
@@ -87,6 +90,58 @@ def remove_lock(path: Path, filename: str = "fireshare.lock"):
     if lockfile.exists():
         logger.debug(f"A lockfile has been removed at {str(lockfile)}")
         os.remove(lockfile)
+
+
+_VIDEO_LOCK_DIR = Path(tempfile.gettempdir()) / "fireshare-video-locks"
+
+def _open_video_lock_file(video_id):
+    # The web process and a `fireshare` command run by hand through `docker exec` are
+    # different users, so the directory is left open to everyone, like /tmp itself.
+    try:
+        _VIDEO_LOCK_DIR.mkdir()
+        os.chmod(_VIDEO_LOCK_DIR, 0o1777)
+    except FileExistsError:
+        pass
+    path = _VIDEO_LOCK_DIR / f"{video_id}.lock"
+    # Read-only is enough for flock. O_CREAT only ever runs with O_EXCL, because Linux
+    # refuses O_CREAT on another user's file in a sticky directory (protected_regular).
+    try:
+        return os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        pass
+    try:
+        return os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return os.open(path, os.O_RDONLY)
+
+@contextmanager
+def video_lock(video_id, wait=True):
+    """
+    Hold the lock on one video's crop and transcodes for the length of the block.
+
+    Saving a crop rebuilds them in a thread of the web process while the scheduled
+    scan transcodes in a process of its own, and the two used to write the same files
+    at once. Yields True once the lock is held, or False straight away when wait is
+    False and someone else holds it. flock is released by the kernel when its holder
+    exits, so a crash can never leave a video locked. The files live in the local
+    temp dir because every process that takes the lock runs in the same container.
+    """
+    try:
+        fd = _open_video_lock_file(video_id)
+    except OSError as ex:
+        logger.warning(f"Could not open the lock for video {video_id}, continuing without it: {ex}")
+        yield True
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held = False
+        else:
+            held = True
+        yield held
+    finally:
+        os.close(fd)  # releases the lock
 
 
 # Transcoding status file functions
@@ -240,6 +295,26 @@ def get_video_duration(path):
             return float(data['format']['duration'])
     except Exception as ex:
         logger.debug(f'Could not extract video duration: {ex}')
+    return None
+
+def get_video_framerate(path):
+    """
+    Get the average frame rate of a video file's first video stream.
+
+    Returns:
+        float: Frames per second, or None if unable to determine
+    """
+    try:
+        cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-select_streams', 'v:0',
+               '-show_entries', 'stream=avg_frame_rate,r_frame_rate', str(path)]
+        logger.debug(f"$ {' '.join(cmd)}")
+        stream = json.loads(sp.check_output(cmd).decode('utf-8'))['streams'][0]
+        for key in ('avg_frame_rate', 'r_frame_rate'):
+            num, _, den = stream.get(key, '').partition('/')
+            if num and den and float(den) > 0 and float(num) > 0:
+                return float(num) / float(den)
+    except Exception as ex:
+        logger.debug(f'Could not extract video frame rate: {ex}')
     return None
 
 def validate_video_file(path, timeout=30):
@@ -428,17 +503,24 @@ def create_video_crop(source_path, out_path, start_time=None, end_time=None):
     Uses -c copy (no re-encode) so this is fast even for large files.
     Returns True on success, False on failure.
     """
+    out_path = Path(out_path)
+    # Written beside the final path and renamed in on success. nginx serves the crop in
+    # place of the original as soon as it exists, and +faststart rewrites the whole file
+    # in a second pass, so a crop still being written must never appear under its name.
+    tmp_path = out_path.parent / (out_path.stem + '.tmp.mp4')
     cmd = ['ffmpeg', '-y']
     if start_time:
         cmd += ['-ss', str(start_time)]
     if end_time:
         cmd += ['-to', str(end_time)]
-    cmd += ['-i', str(source_path), '-c', 'copy', '-movflags', '+faststart', str(out_path)]
+    cmd += ['-i', str(source_path), '-c', 'copy', '-movflags', '+faststart', str(tmp_path)]
     logger.debug(f"$ {' '.join(cmd)}")
     result = sp.call(cmd)
     if result == 0:
+        os.replace(tmp_path, out_path)
         logger.info(f'Created crop {str(out_path)} (start={start_time}, end={end_time})')
     else:
+        tmp_path.unlink(missing_ok=True)
         logger.error(f'Failed to create crop {str(out_path)} (exit code {result})')
     return result == 0
 
@@ -469,19 +551,26 @@ def create_audio_extract(source_path, out_path):
 
 def create_poster(video_path, out_path, second=0):
     s = time.time()
+    out_path = Path(out_path)
+    # Rendered beside the final path and renamed in, so a request for the poster never
+    # reads one ffmpeg is still writing, and a failed attempt leaves the old one in place.
+    tmp_path = out_path.parent / (out_path.stem + '.tmp' + out_path.suffix)
     # -ss before -i uses fast keyframe seek, reliable even for large high-bitrate files
-    cmd = ['ffmpeg', '-v', 'quiet', '-y', '-ss', str(second), '-i', str(video_path), '-vframes', '1', '-vf', 'scale=iw:ih:force_original_aspect_ratio=decrease', str(out_path)]
+    cmd = ['ffmpeg', '-v', 'quiet', '-y', '-ss', str(second), '-i', str(video_path), '-vframes', '1', '-vf', 'scale=iw:ih:force_original_aspect_ratio=decrease', str(tmp_path)]
     logger.debug(f"$ {' '.join(cmd)}")
     ret = sp.call(cmd)
     e = time.time()
-    out_path = Path(out_path)
-    success = ret == 0 and out_path.exists() and out_path.stat().st_size > 0
+    success = ret == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0
     if not success and second != 0:
         # Fall back to first frame if the seek position failed
         logger.warning(f"Poster generation failed at {second}s (exit {ret}), retrying with first frame")
         cmd[3] = '0'
         ret = sp.call(cmd)
-        success = ret == 0 and out_path.exists() and out_path.stat().st_size > 0
+        success = ret == 0 and tmp_path.exists() and tmp_path.stat().st_size > 0
+    if success:
+        os.replace(tmp_path, out_path)
+    else:
+        tmp_path.unlink(missing_ok=True)
     logger.debug(f'Generated poster {str(out_path)} in {e-s}s (success={success})')
     return success
 
@@ -728,28 +817,30 @@ def _get_encoder_candidates(use_gpu=False, encoder_preference='auto'):
         'video_codec': 'libx264',
         'audio_codec': 'aac',
         'audio_bitrate': '128k',
-        'extra_args': ['-preset', 'fast', '-crf', '23', '-movflags', '+faststart']
+        'extra_args': ['-preset', 'fast', '-crf', '23'],
+        'cap_bitrate': True,
     }
     av1_cpu = {
         'name': 'AV1 CPU',
         'video_codec': 'libsvtav1',
         'audio_codec': 'libopus',
         'audio_bitrate': '96k',
-        'extra_args': ['-preset', '6', '-crf', '30', '-b:v', '0', '-movflags', '+faststart']
+        'extra_args': ['-preset', '6', '-crf', '30', '-b:v', '0']
     }
     h264_nvenc = {
         'name': 'H.264 NVENC',
         'video_codec': 'h264_nvenc',
         'audio_codec': 'aac',
         'audio_bitrate': '128k',
-        'extra_args': ['-preset', 'p4', '-cq:v', '23', '-movflags', '+faststart']
+        'extra_args': ['-preset', 'p4', '-cq:v', '23'],
+        'cap_bitrate': True,
     }
     av1_nvenc = {
         'name': 'AV1 NVENC',
         'video_codec': 'av1_nvenc',
         'audio_codec': 'libopus',
         'audio_bitrate': '96k',
-        'extra_args': ['-preset', 'p4', '-cq:v', '30', '-movflags', '+faststart']
+        'extra_args': ['-preset', 'p4', '-cq:v', '30']
     }
 
     if encoder_preference == 'h264':
@@ -874,7 +965,21 @@ def run_ffmpeg_with_progress(cmd, total_duration, timeout_seconds=None, data_pat
     return process
 
 
-def _build_transcode_command(video_path, out_path, height, encoder, input_decoder=None):
+# Ceilings (maxrate, bufsize) for the H.264 transcodes, on top of their quality target.
+# Quality alone let a busy 1080p60 clip come out as heavy as its 1440p source, so moving
+# a viewer down to it did nothing for a slow connection. These are YouTube's recommended
+# upload bitrates, which it treats as good enough to re-encode from, so ordinary footage
+# stays under them and only the busiest is held back. Past 30 fps the same bitrate is
+# spread over up to twice the frames, so those get the higher set, as does an unknown
+# frame rate.
+TRANSCODE_BITRATE_CAPS = {
+    #      up to 30 fps       above 30 fps
+    1080: (('8M', '16M'),    ('12M', '24M')),
+    720:  (('5M', '10M'),    ('7500k', '15M')),
+    480:  (('2500k', '5M'),  ('4M', '8M')),
+}
+
+def _build_transcode_command(video_path, out_path, height, encoder, input_decoder=None, framerate=None):
     """Build an ffmpeg command for transcoding with the given encoder."""
     cmd = ['ffmpeg', '-v', 'warning', '-stats', '-y']
     if input_decoder:
@@ -885,9 +990,18 @@ def _build_transcode_command(video_path, out_path, height, encoder, input_decode
     
     if 'extra_args' in encoder:
         cmd.extend(encoder['extra_args'])
+
+    if encoder.get('cap_bitrate') and height in TRANSCODE_BITRATE_CAPS:
+        # 31 so that 29.97 fps, and 30 fps recordings a little variable, count as 30
+        high_fps = framerate is None or framerate > 31
+        maxrate, bufsize = TRANSCODE_BITRATE_CAPS[height][1 if high_fps else 0]
+        cmd.extend(['-maxrate', maxrate, '-bufsize', bufsize])
     
     cmd.extend(['-vf', f'scale=-2:{height}'])
     cmd.extend(['-c:a', encoder['audio_codec'], '-b:a', encoder.get('audio_bitrate', '128k')])
+    # The index goes at the front, so the player can start without first fetching the
+    # end of the file, and again every time it switches quality.
+    cmd.extend(['-movflags', '+faststart'])
     cmd.append(str(out_path))
     
     return cmd
@@ -933,6 +1047,8 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
 
     # Get video duration for progress logging
     total_duration = get_video_duration(video_path) or 0
+    # Picks which set of bitrate ceilings applies
+    framerate = get_video_framerate(video_path)
 
     # Calculate smart timeout based on video duration if not provided
     if timeout_seconds is None:
@@ -964,7 +1080,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
 
         # Build ffmpeg command using the cached encoder
         logger.info(f"Transcoding video to {height}p using {encoder['name']}")
-        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder)
+        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate)
 
         logger.debug(f"$: {' '.join(cmd)}")
 
@@ -1110,7 +1226,7 @@ def transcode_video_quality(video_path, out_path, height, use_gpu=False, timeout
         logger.debug(f"Trying {encoder['name']}...")
 
         # Build ffmpeg command targeting the temp path
-        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder)
+        cmd = _build_transcode_command(video_path, tmp_path, height, encoder, input_decoder=preferred_decoder, framerate=framerate)
 
         logger.debug(f"$: {' '.join(cmd)}")
 

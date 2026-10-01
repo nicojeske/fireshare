@@ -20,9 +20,6 @@ const TYPE_OPTIONS = [
 ]
 
 const GAP = 12
-// Columns narrower than this are useless on a phone, but two of them beat the
-// single 300px column the other pages fall back to there.
-const PHONE_MIN_COLUMN = 170
 // CompactVideoCard is a 16:9 poster plus an info block (title, game and meta
 // rows with their padding) that renders at roughly this height. The estimate
 // only decides which column a card lands in, so a few pixels either way is fine.
@@ -299,8 +296,9 @@ const Home = ({ authenticated, searchText, cardSize, uploadTick }) => {
     return out
   }, [displayItems, sortOrder])
 
-  const minColumn = isMobile ? Math.min(cardSize || 300, PHONE_MIN_COLUMN) : cardSize || 300
-  const columnCount = width ? Math.max(1, Math.floor((width + GAP) / (minColumn + GAP))) : 1
+  // A phone gets one full-width column, the same as every other page.
+  const minColumn = cardSize || 300
+  const columnCount = width && !isMobile ? Math.max(1, Math.floor((width + GAP) / (minColumn + GAP))) : 1
   const columnWidth = width ? Math.floor((width - GAP * (columnCount - 1)) / columnCount) : minColumn
 
   const videoList = React.useMemo(() => displayItems.filter((i) => i.kind === 'video').map((i) => i.raw), [displayItems])

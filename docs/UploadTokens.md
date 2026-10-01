@@ -174,7 +174,7 @@ for c in chunk_*; do
 done
 ```
 
-## Listing folders and games
+## Listing folders, games and tags
 
 To offer real choices rather than making a user type a folder name from memory:
 
@@ -192,6 +192,9 @@ curl https://fireshare.example.com/api/upload/token/options \
   },
   "games": [
     { "id": 3, "name": "VALORANT", "steamgriddb_id": 12345 }
+  ],
+  "tags": [
+    { "id": 7, "name": "Clutch", "color": "#FF5733" }
   ]
 }
 ```
@@ -199,6 +202,31 @@ curl https://fireshare.example.com/api/upload/token/options \
 Every game in the library is listed, including ones with nothing linked to them
 yet — `/api/games` hides those, but they are exactly the games an upload might be
 the first to use, and the `game` field already accepts them.
+
+### Tags
+
+`tags` lists the tags an upload may name, sorted by name. Send the ids you want
+as the upload's comma-separated `tag_ids`. `color` is the tag's hex colour, or
+`null` if it has none.
+
+Which tags appear follows the rule the tag listings in the browser use:
+
+* A token whose account can **view private media** sees every tag.
+* Any other token sees the tags that are on at least one public item, plus the
+  tags that are on nothing at all yet.
+
+The only tags left out are ones that appear solely on private media, which
+`/api/tags` hides from the same accounts. Unused tags are included on purpose.
+`/api/tags` doesn't recognise upload tokens and would leave them out, but a tag
+created a moment ago is exactly the one somebody setting up an upload has come to
+choose.
+
+`tag_ids` is not checked against this list, so an id for a tag that has since
+been deleted is accepted. Read the list again before relying on an id you stored
+earlier.
+
+An instance older than this field doesn't send `tags` at all, which is not the
+same as having no tags. Treat a missing key as "this Fireshare can't list tags".
 
 ### Folder rules
 
