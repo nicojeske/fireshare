@@ -20,7 +20,7 @@ git status                      # must be clean; stop and ask if it is not
 git remote get-url upstream || git remote add upstream https://github.com/fireshare-app/fireshare.git
 git fetch origin && git fetch upstream
 git checkout main && git pull --ff-only origin main
-gh issue list --label upstream-sync --state open   # note the issue number, if any
+gh issue list --repo nicojeske/fireshare --label upstream-sync --state open   # note the issue number, if any
 ```
 
 Create a working branch and start the merge:
@@ -101,12 +101,15 @@ entrypoints were touched. Fix any failures before continuing.
 ```bash
 git commit --no-edit            # keeps the default "Merge remote-tracking branch 'upstream/main'" message
 git push -u origin HEAD
-gh pr create --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" --base main \
+gh pr create --repo nicojeske/fireshare --head "$(git branch --show-current)" --base main \
   --title "chore: merge upstream $(git rev-parse --short upstream/main)" \
   --body "<summary>"
 ```
 
-Always pass `--repo` so the PR targets the fork, not upstream. The PR body must
+**Always pass `--repo nicojeske/fireshare`, hardcoded.** Never derive it from
+`gh repo view`: in this checkout gh's default repo is upstream, so it would open
+the PR on `fireshare-app/fireshare`. Never create PRs, issues or comments on
+upstream. The PR body must
 list each conflicted file with a one-line explanation of how it was resolved,
 anything dropped as superseded by upstream, the verification commands you ran,
 and `Closes #<issue>` for the open `upstream-sync` issue.
