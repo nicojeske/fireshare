@@ -24,6 +24,34 @@ a new secret; the old one stops working immediately.
 
 Each account may hold up to 20 tokens.
 
+## Connecting an app instead
+
+An app can get a token of its own without anybody copying a secret. This also
+works for accounts that sign in with Discord and have no password. It is a
+device-code flow, like signing in on a TV:
+
+1. The app calls `POST /api/connect/start` with `{"client_name": "SteamReplay on DESKTOP-X"}`.
+   The answer is `{device_code, user_code, verification_path, expires_in, interval}`.
+   The request lives `expires_in` seconds (600). Each IP may start 20 requests per 5 minutes.
+2. The app opens `<server><verification_path>` (`/connect?code=K7QM-2XPD`) in the
+   browser and shows `user_code`. The page sends the user through the login if
+   needed, names the app and shows the code, and asks them to **Allow** or **Deny**.
+3. The app polls `POST /api/connect/token` with `{"device_code": "…"}` every
+   `interval` seconds. The answer is `{"status": "pending"}`, `"denied"` or `"expired"`, or
+   `{"status": "approved", "username": "…", "token": {…, "secret": "fsk_…"}}`.
+
+The token is created on the poll that collects it, after re-checking the account.
+It counts towards the 20 tokens and shows up in the list under the app's name. The
+request can be collected once. Only the sha256 of the device code is stored, and
+unknown device codes count towards the same per-IP throttle as bad tokens.
+
+The session routes behind the page are `GET /api/connect/<user_code>`,
+`POST /api/connect/<user_code>/approve` and `POST /api/connect/<user_code>/deny`.
+They need the **Upload** permission.
+
+An app disconnects with `DELETE /api/upload/token`, which deletes the token that
+authenticates the request.
+
 ## Uploading
 
 ```

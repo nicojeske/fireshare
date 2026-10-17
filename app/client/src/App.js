@@ -19,6 +19,7 @@ import TagVideos from './views/TagVideos'
 import FileManager from './views/FileManager'
 import Profile from './views/Profile'
 import SetupPassword from './views/SetupPassword'
+import Connect from './views/Connect'
 import darkTheme from './common/darkTheme'
 import { ConfigService } from './services'
 import { getSetting, setSetting } from './common/utils'
@@ -235,6 +236,14 @@ export default function App() {
               element={
                 <MainNavbar page="/setup-password" mainPadding={0} toolbar={false}>
                   <SetupPassword />
+                </MainNavbar>
+              }
+            />
+            <Route
+              path="/connect"
+              element={
+                <MainNavbar page="/connect" mainPadding={0} toolbar={false}>
+                  <Connect />
                 </MainNavbar>
               }
             />

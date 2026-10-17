@@ -55,6 +55,9 @@ class User(UserMixin, db.Model):
     upload_tokens = db.relationship(
         "UploadToken", back_populates="user", cascade="all, delete-orphan", lazy="select"
     )
+    connect_requests = db.relationship(
+        "ConnectRequest", back_populates="user", cascade="all, delete-orphan", lazy="select"
+    )
 
     @property
     def granted_permissions(self):
@@ -741,3 +744,31 @@ class UploadToken(db.Model):
 
     def __repr__(self):
         return "<UploadToken {} {} user:{}>".format(self.id, self.prefix, self.user_id)
+
+
+class ConnectRequest(db.Model):
+    """A pending "connect an app" request: a device-code flow that ends in an upload token.
+
+    The app starts a request and polls with its device code while the owner approves
+    the matching user code in the browser. Only the sha256 of the device code is
+    stored, and the token is minted when the app collects it, so the database never
+    holds a usable secret. In the database rather than process memory because the
+    start, the approval and the collection can each land on a different worker.
+    """
+    __tablename__ = "connect_request"
+
+    id               = db.Column(db.Integer, primary_key=True)
+    device_code_hash = db.Column(db.String(64), unique=True, index=True, nullable=False)
+    # Stored without the dash, upper case.
+    user_code        = db.Column(db.String(16), unique=True, index=True, nullable=False)
+    client_name      = db.Column(db.String(64), nullable=False)
+    created_at       = db.Column(db.DateTime(), nullable=False)
+    expires_at       = db.Column(db.DateTime(), nullable=False)
+    # pending, approved, denied or claimed.
+    status           = db.Column(db.String(16), nullable=False, default="pending")
+    user_id          = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="CASCADE"), nullable=True)
+
+    user             = db.relationship("User", back_populates="connect_requests")
+
+    def __repr__(self):
+        return "<ConnectRequest {} {} {}>".format(self.id, self.user_code, self.status)

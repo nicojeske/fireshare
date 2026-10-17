@@ -34,6 +34,12 @@ const submitButtonSx = {
 }
 
 // Codes the Discord callback redirects back with (auth.py, _discord_fail).
+// Only a same-site path: `//host` would send the user to another site after login.
+function safeNext(value) {
+  if (!value || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return null
+  return value
+}
+
 const DISCORD_ERRORS = {
   denied: 'Discord sign-in was cancelled.',
   state: 'Your Discord sign-in expired. Please try again.',
@@ -65,6 +71,8 @@ const LoginForm = function () {
   const [discordEnabled, setDiscordEnabled] = React.useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+  // Where to go after signing in, e.g. the /connect page of an app asking for access.
+  const [next] = React.useState(() => safeNext(searchParams.get('next')))
 
   React.useEffect(() => {
     ConfigService.getConfig()
@@ -88,14 +96,14 @@ const LoginForm = function () {
       setStep('mfa')
       setCode('')
     }
-    setSearchParams({}, { replace: true })
-  }, [searchParams, setSearchParams])
+    setSearchParams(next ? { next } : {}, { replace: true })
+  }, [searchParams, setSearchParams, next])
 
   async function completeLogin() {
     const config = (await ConfigService.getConfig()).data
     setSetting('demo_mode', config.demo_mode || false)
     setSetting('is_demo_user', config.is_demo_user || false)
-    navigate('/')
+    navigate(next || '/')
   }
 
   function errorMessage(err) {
@@ -289,7 +297,7 @@ const LoginForm = function () {
                 variant="contained"
                 size="large"
                 fullWidth
-                href={AuthService.discordLoginUrl}
+                href={next ? `${AuthService.discordLoginUrl}?next=${encodeURIComponent(next)}` : AuthService.discordLoginUrl}
                 sx={discordButtonSx}
               >
                 Sign in with Discord

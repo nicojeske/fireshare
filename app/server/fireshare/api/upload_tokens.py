@@ -160,6 +160,34 @@ def _clean_token_name(value):
     return cleaned[:TOKEN_NAME_MAX_LENGTH] or None
 
 
+TOKEN_LIMIT_MESSAGE = (f'You already have {MAX_TOKENS_PER_USER} upload tokens. '
+                       'Delete one before creating another.')
+
+
+def token_limit_reached(user):
+    return UploadToken.query.filter_by(user_id=user.id).count() >= MAX_TOKENS_PER_USER
+
+
+def mint_token(user, name):
+    """Create a token for `user` and return its JSON including the raw secret.
+
+    Shared by the token page and the connect flow (api/connect.py), so both mint
+    credentials in exactly the same shape.
+    """
+    raw = _generate_token()
+    token = UploadToken(
+        user_id=user.id,
+        name=name,
+        token_hash=_hash_token(raw),
+        prefix=raw[:PREFIX_DISPLAY_LENGTH],
+        created_at=_now(),
+    )
+    db.session.add(token)
+    db.session.commit()
+    logger.info(f"User '{user.username}' created upload token {token.prefix}")
+    return {**token.json(), 'secret': raw}
+
+
 def _token_from_request():
     """The raw token presented by the caller, or None.
 
@@ -277,26 +305,11 @@ def list_upload_tokens():
 def create_upload_token():
     name = _clean_token_name(request.json_body.get('name')) or 'Upload token'
 
-    if UploadToken.query.filter_by(user_id=current_user.id).count() >= MAX_TOKENS_PER_USER:
-        return jsonify({
-            'error': f'You already have {MAX_TOKENS_PER_USER} upload tokens. '
-                     'Delete one before creating another.'
-        }), 400
-
-    raw = _generate_token()
-    token = UploadToken(
-        user_id=current_user.id,
-        name=name,
-        token_hash=_hash_token(raw),
-        prefix=raw[:PREFIX_DISPLAY_LENGTH],
-        created_at=_now(),
-    )
-    db.session.add(token)
-    db.session.commit()
-    logger.info(f"User '{current_user.username}' created upload token {token.prefix}")
+    if token_limit_reached(current_user):
+        return jsonify({'error': TOKEN_LIMIT_MESSAGE}), 400
 
     # The only time the raw token is ever returned.
-    return jsonify({'token': {**token.json(), 'secret': raw}}), 201
+    return jsonify({'token': mint_token(current_user, name)}), 201
 
 
 @api.route('/api/account/upload-tokens/<int:token_id>', methods=['PUT'])
@@ -691,6 +704,21 @@ def token_upload_check(token_user):
         'supported_video_types': sorted(SUPPORTED_FILE_TYPES),
         'supported_image_types': sorted(SUPPORTED_IMAGE_TYPES),
     })
+
+
+@api.route('/api/upload/token', methods=['DELETE'])
+@upload_token_required
+def token_self_revoke(token_user):
+    """Delete the token that authenticates this request.
+
+    Lets a connected app disconnect cleanly without a browser session; the owner
+    can still delete any token from the token page.
+    """
+    token, _ = _resolve_token(_token_from_request())
+    db.session.delete(token)
+    db.session.commit()
+    logger.info(f"User '{token_user.username}' revoked upload token {token.prefix} from the client")
+    return jsonify({'deleted': True})
 
 
 def _offerable_tags(user):

@@ -19,6 +19,7 @@ from . import login_throttle
 from . import discord_oauth
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 auth = Blueprint('auth', __name__)
 
@@ -285,11 +286,30 @@ def _read_config():
         return {}
 
 
+def safe_next(value):
+    """A same-site path to return to after login, or None.
+
+    Only a relative path is accepted: `//host` and `/\\host` are protocol-relative
+    to a browser, which would make the login an open redirect.
+    """
+    if not isinstance(value, str) or not value.startswith('/') or len(value) > 512:
+        return None
+    if value.startswith('//') or value.startswith('/\\') or any(ord(ch) < 32 for ch in value):
+        return None
+    return value
+
+
+def _next_query(prefix='&'):
+    """`&next=…` for the page stored by discord_start, or ''."""
+    target = safe_next(session.get('login_next'))
+    return f'{prefix}next={quote(target, safe="")}' if target else ''
+
+
 def _discord_fail(code, client_ip=None):
     """Redirect back to the login page with an error code the form translates."""
     if client_ip is not None:
         login_throttle.record_failure(client_ip, DISCORD_THROTTLE_KEY)
-    return redirect(f'/login?discord_error={code}', code=302)
+    return redirect(f'/login?discord_error={code}{_next_query()}', code=302)
 
 
 def _create_discord_user(discord_user, preset):
@@ -335,6 +355,11 @@ def discord_start():
         return Response(status=404)
     if login_throttle.retry_after(get_client_ip(), DISCORD_THROTTLE_KEY):
         return _discord_fail('throttled')
+    target = safe_next(request.args.get('next'))
+    if target:
+        session['login_next'] = target
+    else:
+        session.pop('login_next', None)
     state = secrets.token_urlsafe(32)
     session['discord_oauth_state'] = state
     session['discord_oauth_at'] = time.time()
@@ -400,14 +425,16 @@ def discord_callback():
         session['mfa_attempts'] = 0
         session['mfa_username'] = user.username
         session['mfa_via_discord'] = True
-        return redirect('/login?mfa=1', code=302)
+        next_query = _next_query()
+        session.pop('login_next', None)
+        return redirect(f'/login?mfa=1{next_query}', code=302)
 
     _clear_mfa_pending()
     # No remember-me cookie: it would outlive the periodic membership re-check.
     login_user(user, remember=False)
     session['discord_verified_at'] = time.time()
     _record_login(user)
-    return redirect('/', code=302)
+    return redirect(safe_next(session.pop('login_next', None)) or '/', code=302)
 
 
 @auth.before_app_request

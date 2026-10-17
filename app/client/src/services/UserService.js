@@ -69,6 +69,17 @@ class UserService {
     return Api().delete(`/api/account/upload-tokens/${id}`)
   }
 
+  // --- Connect an app (device-code flow that ends in an upload token) ---
+  getConnectRequest(code) {
+    return Api().get(`/api/connect/${encodeURIComponent(code)}`)
+  }
+  approveConnectRequest(code) {
+    return Api().post(`/api/connect/${encodeURIComponent(code)}/approve`)
+  }
+  denyConnectRequest(code) {
+    return Api().post(`/api/connect/${encodeURIComponent(code)}/deny`)
+  }
+
   // --- Invite redemption (unauthenticated) ---
   checkSetupToken(token) {
     return Api().get('/api/account/setup-password', { params: { token } })
