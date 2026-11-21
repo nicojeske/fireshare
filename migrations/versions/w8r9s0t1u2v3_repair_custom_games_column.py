@@ -1,7 +1,7 @@
 """repair game_metadata.is_custom after the fork's revision id collision
 
 Revision ID: w8r9s0t1u2v3
-Revises: v7q8r9s0t1u2
+Revises: fork_001_discord_id
 Create Date: 2026-10-14 10:00:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = 'w8r9s0t1u2v3'
-down_revision = 'v7q8r9s0t1u2'
+down_revision = 'fork_001_discord_id'
 branch_labels = None
 depends_on = None
 

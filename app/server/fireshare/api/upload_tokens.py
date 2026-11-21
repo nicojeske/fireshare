@@ -47,7 +47,7 @@ from ..models import (CustomTag, FolderRule, GameMetadata, Image, ImageFolderRul
                       ImageTagLink, UploadToken, User, Video, VideoInfo, VideoTagLink)
 from . import api
 from .decorators import json_body, require_perm
-from .helpers import sanitize_upload_folder, secure_filename
+from .helpers import parse_client_mtime, sanitize_upload_folder, secure_filename
 from .image import SUPPORTED_IMAGE_TYPES, _launch_scan_image
 from .upload import (_check_upload_size, _launch_scan_video, _parse_upload_metadata, _reject_duplicate,
                      _reject_non_video)
@@ -477,6 +477,8 @@ def _prepare_upload(raw_filename, file_size):
         'tag_ids': tag_ids,
         'game_id': game_id,
         'title': title,
+        # The chunked route sends this with every part, so the final one has it.
+        'client_mtime': parse_client_mtime(request.form.get('lastModified')),
     }, None
 
 
@@ -485,7 +487,7 @@ def _finish_upload(plan, save_path, token_user):
     if plan['media_type'] == 'image':
         _launch_scan_image(save_path, plan['config'], game_id=plan['game_id'],
                            tag_ids=plan['tag_ids'], title=plan['title'],
-                           uploaded_by=token_user.id)
+                           uploaded_by=token_user.id, client_mtime=plan['client_mtime'])
     else:
         rejected = _reject_non_video(save_path)
         if rejected:
@@ -494,7 +496,8 @@ def _finish_upload(plan, save_path, token_user):
         if duplicate:
             return duplicate
         _launch_scan_video(save_path, plan['config'], plan['tag_ids'], plan['game_id'],
-                           plan['title'], uploaded_by=token_user.id)
+                           plan['title'], uploaded_by=token_user.id,
+                           client_mtime=plan['client_mtime'])
 
     logger.info(
         f"Token upload: {plan['media_type']} '{os.path.basename(save_path)}' into "
@@ -520,6 +523,8 @@ def token_upload(token_user):
       game_id   optional Fireshare game id, or
       game      optional game name, resolved against existing games
       tag_ids   optional comma-separated tag ids
+      lastModified  optional original modified time, ms since the epoch; the
+                    item's date when the file carries none of its own
     """
     if 'file' not in request.files:
         return Response(status=400, response='A "file" part is required.')
@@ -573,7 +578,7 @@ def token_upload_chunked(token_user):
       checkSum     caller-chosen id grouping the chunks, [A-Za-z0-9_-] (required)
       fileName     the finished file's name; its extension picks video or image (required)
       fileSize     the finished file's size in bytes, verified after reassembly (required)
-      title / folder / game_id / game / tag_ids as for /api/upload/token
+      title / folder / game_id / game / tag_ids / lastModified as for /api/upload/token
     """
     if 'blob' not in request.files:
         return Response(status=400, response='A "blob" part is required.')
