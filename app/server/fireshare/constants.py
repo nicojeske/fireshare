@@ -32,6 +32,8 @@ DEFAULT_CONFIG = {
     "discord_upload_limit_mb": 20,
     "generic_webhook_url": "",
     "generic_webhook_payload": {},
+    # Hold new-video webhooks until the video's transcodes are made.
+    "webhook_wait_for_transcodes": False,
     "steamgriddb_api_key": "",
     "discord_login_enabled": False,
     "discord_login_guild_id": "",
